@@ -19,7 +19,7 @@ class TestGradientBoosterRegression:
         )
         
         y = np.array([1.0, 2.0, 3.0, 4.0])
-        initial_pred = booster._calculate_initial_prediction(y, is_classification=False)
+        initial_pred = booster._calculate_initial_prediction(y, n_classes=None)  # None for regression
         
         assert abs(initial_pred - np.mean(y)) < 1e-10
     
@@ -110,7 +110,7 @@ class TestGradientBoosterClassification:
         )
         
         y = np.array([0.0, 0.0, 1.0, 1.0])
-        initial_pred = booster._calculate_initial_prediction(y, is_classification=True)
+        initial_pred = booster._calculate_initial_prediction(y, n_classes=2)  # 2 for binary classification
         
         # p = 0.5, log-odds = log(0.5 / 0.5) = log(1) = 0
         assert abs(initial_pred) < 1e-10

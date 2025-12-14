@@ -133,9 +133,18 @@ class XGBClassifier(BaseEstimator, ClassifierMixin, BoosterBase):
         # Initialize and train the booster
         from myXGBoost.booster.gradient_booster import GradientBooster
         from myXGBoost.loss.classification import LogisticLoss
+        from myXGBoost.loss.softmax_loss import SoftmaxLoss
+        
+        # Choose loss function based on number of classes
+        if self.n_classes_ == 2:
+            # Binary classification
+            loss_function = LogisticLoss()
+        else:
+            # Multiclass classification
+            loss_function = SoftmaxLoss(n_classes=self.n_classes_)
         
         self.booster_ = GradientBooster(
-            loss_function=LogisticLoss(),
+            loss_function=loss_function,
             n_estimators=self.n_estimators,
             learning_rate=self.learning_rate,
             max_depth=self.max_depth,

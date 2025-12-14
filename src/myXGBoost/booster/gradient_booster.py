@@ -99,9 +99,12 @@ class GradientBooster(BoosterBase):
         self.max_bins = max_bins
         
         # Model state
-        self.trees: List[DecisionTree] = []
-        self.initial_prediction: Optional[float] = None
+        self.trees: List[DecisionTree] = []  # For binary/regression
+        self.trees_multiclass: List[List[DecisionTree]] = []  # For multiclass: trees_multiclass[class_idx][tree_idx]
+        self.initial_prediction: Optional[float] = None  # For binary/regression
+        self.initial_predictions_multiclass: Optional[np.ndarray] = None  # For multiclass: (n_classes,)
         self.n_features_: Optional[int] = None
+        self.n_classes_: Optional[int] = None  # Number of classes (None for regression, 2 for binary, >2 for multiclass)
         self.best_iteration_: Optional[int] = None
         
         # Early stopping
@@ -110,35 +113,41 @@ class GradientBooster(BoosterBase):
         self.eval_metric: Optional[Callable] = None
         self.eval_results: List[dict] = []
     
-    def _calculate_initial_prediction(self, y: np.ndarray, is_classification: bool = False) -> float:
+    def _calculate_initial_prediction(self, y: np.ndarray, n_classes: Optional[int] = None):
         """
         Calculate initial prediction.
         
         For regression: mean of y
-        For classification: log-odds (log(p / (1-p)) where p = mean(y))
+        For binary classification: log-odds (log(p / (1-p)) where p = mean(y))
+        For multiclass: log of class probabilities (softmax initialization)
         
         Parameters
         ----------
         y : ndarray
-            Target values.
-        is_classification : bool, default=False
-            Whether this is a classification task.
+            Target values (encoded as class indices for classification).
+        n_classes : int, optional
+            Number of classes (None for regression, 2 for binary, >2 for multiclass).
             
         Returns
         -------
-        initial_pred : float
-            Initial prediction value.
+        initial_pred : float or ndarray
+            Initial prediction value(s). Float for regression/binary, array for multiclass.
         """
-        if is_classification:
-            # For binary classification: log-odds
-            # p = mean(y), log-odds = log(p / (1-p))
+        if n_classes is None:
+            # Regression: mean
+            return float(np.mean(y))
+        elif n_classes == 2:
+            # Binary classification: log-odds
             p = np.mean(y)
-            # Avoid log(0) or log(inf)
             p = np.clip(p, 1e-15, 1 - 1e-15)
             return np.log(p / (1 - p))
         else:
-            # For regression: mean
-            return float(np.mean(y))
+            # Multiclass: log probabilities for each class
+            # Initialize with class frequencies
+            class_counts = np.bincount(y.astype(int), minlength=n_classes)
+            class_probs = (class_counts + 1) / (len(y) + n_classes)  # Laplace smoothing
+            # Return log probabilities (will be used as initial logits)
+            return np.log(class_probs).astype(np.float64)
     
     def _sample_rows(self, n_samples: int) -> np.ndarray:
         """
@@ -234,22 +243,46 @@ class GradientBooster(BoosterBase):
         if self.random_state is not None:
             np.random.seed(self.random_state)
         
-        # Determine if classification (binary)
-        # Check if loss function is a classification loss
+        # Determine if classification and number of classes
         from myXGBoost.loss.base import ClassificationLoss
+        from myXGBoost.loss.softmax_loss import SoftmaxLoss
         is_classification = isinstance(self.loss_function, ClassificationLoss)
         
-        # For classification, y should be encoded as 0/1
         if is_classification:
+            # Determine number of classes
+            if isinstance(self.loss_function, SoftmaxLoss):
+                self.n_classes_ = self.loss_function.n_classes
+            else:
+                # Binary classification
+                self.n_classes_ = 2
             y_encoded = y.copy()
         else:
+            # Regression
+            self.n_classes_ = None
             y_encoded = y
         
         # Calculate initial prediction
-        self.initial_prediction = self._calculate_initial_prediction(y_encoded, is_classification)
+        if self.n_classes_ is not None and self.n_classes_ > 2:
+            # Multiclass
+            self.initial_predictions_multiclass = self._calculate_initial_prediction(y_encoded, self.n_classes_)
+            self.initial_prediction = None
+            # Initialize per-class tree lists
+            self.trees_multiclass = [[] for _ in range(self.n_classes_)]
+            self.trees = []
+        else:
+            # Binary or regression
+            self.initial_prediction = self._calculate_initial_prediction(y_encoded, self.n_classes_)
+            self.initial_predictions_multiclass = None
+            self.trees = []
+            self.trees_multiclass = []
         
         # Initialize predictions
-        y_pred = np.full(n_samples, self.initial_prediction, dtype=np.float64)
+        if self.n_classes_ is not None and self.n_classes_ > 2:
+            # Multiclass: y_pred is (n_samples, n_classes)
+            y_pred = np.tile(self.initial_predictions_multiclass, (n_samples, 1))
+        else:
+            # Binary or regression: y_pred is (n_samples,)
+            y_pred = np.full(n_samples, self.initial_prediction, dtype=np.float64)
         
         # Store for early stopping
         self.early_stopping_rounds = early_stopping_rounds
@@ -272,38 +305,76 @@ class GradientBooster(BoosterBase):
             
             # Apply sample weights if provided
             if sample_weight is not None:
-                grad = grad * sample_weight
-                hess = hess * sample_weight
+                grad = grad * sample_weight if grad.ndim == 1 else grad * sample_weight[:, np.newaxis]
+                hess = hess * sample_weight if hess.ndim == 1 else hess * sample_weight[:, np.newaxis]
             
-            # Row subsampling
-            row_indices = self._sample_rows(n_samples)
-            X_sampled = X[row_indices]
-            grad_sampled = grad[row_indices]
-            hess_sampled = hess[row_indices]
-            
-            # Column subsampling
-            feature_indices = self._sample_features(n_features)
-            
-            # Build tree with hybrid split finding
-            tree = DecisionTree(
-                max_depth=self.max_depth,
-                min_child_weight=self.min_child_weight,
-                reg_lambda=self.reg_lambda,
-                gamma=self.gamma,
-                use_hybrid_split_finder=self.use_hybrid_split_finder,
-                exact_threshold=self.exact_threshold,
-                max_bins=self.max_bins
-            )
-            tree.fit(X_sampled, grad_sampled, hess_sampled, feature_indices)
-            
-            # Get tree predictions for all samples (not just sampled)
-            tree_pred = tree.predict(X)
-            
-            # Update predictions: y_pred += learning_rate * tree_pred
-            y_pred += self.learning_rate * tree_pred
-            
-            # Store tree
-            self.trees.append(tree)
+            if self.n_classes_ is not None and self.n_classes_ > 2:
+                # Multiclass: train one tree per class
+                for class_idx in range(self.n_classes_):
+                    # Get gradients/hessians for this class
+                    grad_class = grad[:, class_idx]
+                    hess_class = hess[:, class_idx]
+                    
+                    # Row subsampling
+                    row_indices = self._sample_rows(n_samples)
+                    X_sampled = X[row_indices]
+                    grad_sampled = grad_class[row_indices]
+                    hess_sampled = hess_class[row_indices]
+                    
+                    # Column subsampling
+                    feature_indices = self._sample_features(n_features)
+                    
+                    # Build tree
+                    tree = DecisionTree(
+                        max_depth=self.max_depth,
+                        min_child_weight=self.min_child_weight,
+                        reg_lambda=self.reg_lambda,
+                        gamma=self.gamma,
+                        use_hybrid_split_finder=self.use_hybrid_split_finder,
+                        exact_threshold=self.exact_threshold,
+                        max_bins=self.max_bins
+                    )
+                    tree.fit(X_sampled, grad_sampled, hess_sampled, feature_indices)
+                    
+                    # Get tree predictions for all samples
+                    tree_pred = tree.predict(X)
+                    
+                    # Update predictions for this class
+                    y_pred[:, class_idx] += self.learning_rate * tree_pred
+                    
+                    # Store tree
+                    self.trees_multiclass[class_idx].append(tree)
+            else:
+                # Binary or regression: single tree per iteration
+                # Row subsampling
+                row_indices = self._sample_rows(n_samples)
+                X_sampled = X[row_indices]
+                grad_sampled = grad[row_indices]
+                hess_sampled = hess[row_indices]
+                
+                # Column subsampling
+                feature_indices = self._sample_features(n_features)
+                
+                # Build tree
+                tree = DecisionTree(
+                    max_depth=self.max_depth,
+                    min_child_weight=self.min_child_weight,
+                    reg_lambda=self.reg_lambda,
+                    gamma=self.gamma,
+                    use_hybrid_split_finder=self.use_hybrid_split_finder,
+                    exact_threshold=self.exact_threshold,
+                    max_bins=self.max_bins
+                )
+                tree.fit(X_sampled, grad_sampled, hess_sampled, feature_indices)
+                
+                # Get tree predictions for all samples
+                tree_pred = tree.predict(X)
+                
+                # Update predictions
+                y_pred += self.learning_rate * tree_pred
+                
+                # Store tree
+                self.trees.append(tree)
             
             # Evaluate on validation sets
             if eval_set is not None and eval_metric is not None:
@@ -368,7 +439,10 @@ class GradientBooster(BoosterBase):
                       f"train_loss: {train_loss:.6f}")
         
         if self.best_iteration_ is None:
-            self.best_iteration_ = len(self.trees) - 1
+            if self.n_classes_ is not None and self.n_classes_ > 2:
+                self.best_iteration_ = len(self.trees_multiclass[0]) - 1
+            else:
+                self.best_iteration_ = len(self.trees) - 1
         
         return self
 
@@ -384,23 +458,35 @@ class GradientBooster(BoosterBase):
             
         Returns
         -------
-        y_pred : ndarray of shape (n_samples,)
-            Raw predictions.
+        y_pred : ndarray
+            Raw predictions. Shape (n_samples,) for binary/regression, 
+            (n_samples, n_classes) for multiclass.
         """
-        if self.initial_prediction is None:
+        if self.initial_prediction is None and self.initial_predictions_multiclass is None:
             raise ValueError("Model has not been fitted yet.")
         
         X = np.asarray(X, dtype=np.float64)
         n_samples = X.shape[0]
         
-        # Start with initial prediction
-        y_pred = np.full(n_samples, self.initial_prediction, dtype=np.float64)
-        
-        # Add contributions from all trees
-        n_trees = len(self.trees) if self.best_iteration_ is None else self.best_iteration_ + 1
-        for i in range(n_trees):
-            tree_pred = self.trees[i].predict(X)
-            y_pred += self.learning_rate * tree_pred
+        if self.n_classes_ is not None and self.n_classes_ > 2:
+            # Multiclass prediction
+            y_pred = np.tile(self.initial_predictions_multiclass, (n_samples, 1))
+            
+            # Add contributions from all trees for each class
+            n_trees = len(self.trees_multiclass[0]) if self.best_iteration_ is None else self.best_iteration_ + 1
+            for class_idx in range(self.n_classes_):
+                for i in range(n_trees):
+                    tree_pred = self.trees_multiclass[class_idx][i].predict(X)
+                    y_pred[:, class_idx] += self.learning_rate * tree_pred
+        else:
+            # Binary or regression prediction
+            y_pred = np.full(n_samples, self.initial_prediction, dtype=np.float64)
+            
+            # Add contributions from all trees
+            n_trees = len(self.trees) if self.best_iteration_ is None else self.best_iteration_ + 1
+            for i in range(n_trees):
+                tree_pred = self.trees[i].predict(X)
+                y_pred += self.learning_rate * tree_pred
         
         return y_pred
     
@@ -439,14 +525,18 @@ class GradientBooster(BoosterBase):
             
         Returns
         -------
-        proba : ndarray of shape (n_samples, 2)
+        proba : ndarray of shape (n_samples, n_classes)
             Class probabilities.
         """
         y_pred_raw = self._predict_raw(X)
         
-        # Apply sigmoid to get probabilities
-        from myXGBoost.loss.classification import sigmoid
-        proba_positive = sigmoid(y_pred_raw)
-        proba_negative = 1 - proba_positive
-        
-        return np.column_stack([proba_negative, proba_positive])
+        if self.n_classes_ is not None and self.n_classes_ > 2:
+            # Multiclass: apply softmax
+            from myXGBoost.loss.softmax_loss import softmax
+            return softmax(y_pred_raw)
+        else:
+            # Binary: apply sigmoid
+            from myXGBoost.loss.classification import sigmoid
+            proba_positive = sigmoid(y_pred_raw)
+            proba_negative = 1 - proba_positive
+            return np.column_stack([proba_negative, proba_positive])
