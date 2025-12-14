@@ -5,6 +5,7 @@ import numpy as np
 from typing import Optional, List, Tuple, Callable
 from myXGBoost.trees.decision_tree import DecisionTree
 from myXGBoost.loss.base import LossFunction
+from joblib import Parallel, delayed
 
 
 class BoosterBase(ABC):
@@ -23,6 +24,37 @@ class BoosterBase(ABC):
     def predict(self, X: np.ndarray) -> np.ndarray:
         """Predict using the fitted booster."""
         pass
+
+
+
+def _train_single_tree(
+    X: np.ndarray,
+    grad: np.ndarray,
+    hess: np.ndarray,
+    row_indices: np.ndarray,
+    feature_indices: np.ndarray,
+    tree_params: dict
+) -> Tuple[DecisionTree, np.ndarray]:
+    """
+    Train a single tree on a subset of data (helper for parallel execution).
+    
+    Returns
+    -------
+    tree : DecisionTree
+        Trained tree.
+    preds : ndarray
+        Predictions on the full dataset X.
+    """
+    X_sampled = X[row_indices]
+    grad_sampled = grad[row_indices]
+    hess_sampled = hess[row_indices]
+    
+    tree = DecisionTree(**tree_params)
+    tree.fit(X_sampled, grad_sampled, hess_sampled, feature_indices)
+    
+    # Predict on all samples for updating residuals
+    preds = tree.predict(X)
+    return tree, preds
 
 
 class GradientBooster(BoosterBase):
@@ -298,28 +330,68 @@ class GradientBooster(BoosterBase):
         best_iteration = 0
         no_improvement_count = 0
         
+        
         # Iteratively build trees
-        for iteration in range(self.n_estimators):
-            # Compute gradients and hessians
-            grad, hess = self.loss_function.grad_hess(y_encoded, y_pred)
-            
-            # Apply sample weights if provided
-            if sample_weight is not None:
-                grad = grad * sample_weight if grad.ndim == 1 else grad * sample_weight[:, np.newaxis]
-                hess = hess * sample_weight if hess.ndim == 1 else hess * sample_weight[:, np.newaxis]
-            
-            if self.n_classes_ is not None and self.n_classes_ > 2:
-                # Multiclass: train one tree per class
-                for class_idx in range(self.n_classes_):
-                    # Get gradients/hessians for this class
-                    grad_class = grad[:, class_idx]
-                    hess_class = hess[:, class_idx]
+        # Use simple Parallel context if multiclass to manage pool efficienty
+        # Typically n_jobs=-1 uses all cores.
+        with Parallel(n_jobs=-1) as parallel:
+            for iteration in range(self.n_estimators):
+                # Compute gradients and hessians
+                grad, hess = self.loss_function.grad_hess(y_encoded, y_pred)
+                
+                # Apply sample weights if provided
+                if sample_weight is not None:
+                    grad = grad * sample_weight if grad.ndim == 1 else grad * sample_weight[:, np.newaxis]
+                    hess = hess * sample_weight if hess.ndim == 1 else hess * sample_weight[:, np.newaxis]
+                
+                if self.n_classes_ is not None and self.n_classes_ > 2:
+                    # Multiclass: train one tree per class IN PARALLEL
                     
+                    # Prepare parameters for trees
+                    tree_params = {
+                        'max_depth': self.max_depth,
+                        'min_child_weight': self.min_child_weight,
+                        'reg_lambda': self.reg_lambda,
+                        'gamma': self.gamma,
+                        'use_hybrid_split_finder': self.use_hybrid_split_finder,
+                        'exact_threshold': self.exact_threshold,
+                        'max_bins': self.max_bins
+                    }
+                    
+                    # Pre-sample indices for each class
+                    tasks = []
+                    for class_idx in range(self.n_classes_):
+                        row_indices = self._sample_rows(n_samples)
+                        feature_indices = self._sample_features(n_features)
+                        
+                        tasks.append((
+                            X,
+                            grad[:, class_idx],
+                            hess[:, class_idx],
+                            row_indices,
+                            feature_indices,
+                            tree_params
+                        ))
+                    
+                    # Execute in parallel reusing the pool
+                    results = parallel(
+                        delayed(_train_single_tree)(*args) for args in tasks
+                    )
+                    
+                    # Process results
+                    for class_idx, (tree, tree_pred) in enumerate(results):
+                        # Update predictions for this class
+                        y_pred[:, class_idx] += self.learning_rate * tree_pred
+                        
+                        # Store tree
+                        self.trees_multiclass[class_idx].append(tree)
+                else:
+                    # Binary or regression: single tree per iteration
                     # Row subsampling
                     row_indices = self._sample_rows(n_samples)
                     X_sampled = X[row_indices]
-                    grad_sampled = grad_class[row_indices]
-                    hess_sampled = hess_class[row_indices]
+                    grad_sampled = grad[row_indices]
+                    hess_sampled = hess[row_indices]
                     
                     # Column subsampling
                     feature_indices = self._sample_features(n_features)
@@ -339,110 +411,80 @@ class GradientBooster(BoosterBase):
                     # Get tree predictions for all samples
                     tree_pred = tree.predict(X)
                     
-                    # Update predictions for this class
-                    y_pred[:, class_idx] += self.learning_rate * tree_pred
+                    # Update predictions
+                    y_pred += self.learning_rate * tree_pred
                     
                     # Store tree
-                    self.trees_multiclass[class_idx].append(tree)
-            else:
-                # Binary or regression: single tree per iteration
-                # Row subsampling
-                row_indices = self._sample_rows(n_samples)
-                X_sampled = X[row_indices]
-                grad_sampled = grad[row_indices]
-                hess_sampled = hess[row_indices]
+                    self.trees.append(tree)
                 
-                # Column subsampling
-                feature_indices = self._sample_features(n_features)
+                # Evaluate on validation sets
+                if eval_set is not None and eval_metric is not None:
+                    eval_result = {}
+                    for i, (X_eval, y_eval) in enumerate(eval_set):
+                        y_pred_eval = self._predict_raw(X_eval)
+                        
+                        # Support both function-based and Metric class-based metrics
+                        if hasattr(eval_metric, 'score'):
+                            # Metric class
+                            score = eval_metric.score(y_eval, y_pred_eval)
+                            metric_name = eval_metric.name
+                        else:
+                            # Function-based metric
+                            score = eval_metric(y_eval, y_pred_eval)
+                            metric_name = 'metric'
+                        
+                        eval_name = eval_names[i] if eval_names else f'eval_{i}'
+                        eval_result[eval_name] = score
+                    
+                    self.eval_results.append(eval_result)
+                    
+                    # Early stopping check
+                    if early_stopping_rounds is not None:
+                        # Use first validation set for early stopping
+                        eval_name = eval_names[0] if eval_names else 'eval_0'
+                        current_score = eval_result.get(eval_name, float('inf'))
+                        
+                        # Determine if higher or lower is better
+                        is_higher_better = True
+                        if hasattr(eval_metric, 'is_higher_better'):
+                            is_higher_better = eval_metric.is_higher_better()
+                        
+                        # Check for improvement
+                        if is_higher_better:
+                            improved = current_score > best_score
+                        else:
+                            improved = current_score < best_score
+                        
+                        if improved:
+                            best_score = current_score
+                            best_iteration = iteration
+                            no_improvement_count = 0
+                        else:
+                            no_improvement_count += 1
+                        
+                        if no_improvement_count >= early_stopping_rounds:
+                            self.best_iteration_ = best_iteration
+                            if verbose:
+                                print(f"Early stopping at iteration {iteration + 1}, "
+                                      f"best iteration: {best_iteration + 1}")
+                            break
+                    
+                    # Print evaluation results if verbose
+                    if verbose:
+                        results_str = ", ".join([f"{k}: {v:.6f}" for k, v in eval_result.items()])
+                        print(f"Iteration {iteration + 1}: {results_str}")
                 
-                # Build tree
-                tree = DecisionTree(
-                    max_depth=self.max_depth,
-                    min_child_weight=self.min_child_weight,
-                    reg_lambda=self.reg_lambda,
-                    gamma=self.gamma,
-                    use_hybrid_split_finder=self.use_hybrid_split_finder,
-                    exact_threshold=self.exact_threshold,
-                    max_bins=self.max_bins
-                )
-                tree.fit(X_sampled, grad_sampled, hess_sampled, feature_indices)
-                
-                # Get tree predictions for all samples
-                tree_pred = tree.predict(X)
-                
-                # Update predictions
-                y_pred += self.learning_rate * tree_pred
-                
-                # Store tree
-                self.trees.append(tree)
+                if verbose and eval_set is None and (iteration + 1) % 10 == 0:
+                    train_loss = self.loss_function.loss(y_encoded, y_pred)
+                    print(f"Iteration {iteration + 1}/{self.n_estimators}, "
+                          f"train_loss: {train_loss:.6f}")
             
-            # Evaluate on validation sets
-            if eval_set is not None and eval_metric is not None:
-                eval_result = {}
-                for i, (X_eval, y_eval) in enumerate(eval_set):
-                    y_pred_eval = self._predict_raw(X_eval)
-                    
-                    # Support both function-based and Metric class-based metrics
-                    if hasattr(eval_metric, 'score'):
-                        # Metric class
-                        score = eval_metric.score(y_eval, y_pred_eval)
-                        metric_name = eval_metric.name
-                    else:
-                        # Function-based metric
-                        score = eval_metric(y_eval, y_pred_eval)
-                        metric_name = 'metric'
-                    
-                    eval_name = eval_names[i] if eval_names else f'eval_{i}'
-                    eval_result[eval_name] = score
-                
-                self.eval_results.append(eval_result)
-                
-                # Early stopping check
-                if early_stopping_rounds is not None:
-                    # Use first validation set for early stopping
-                    eval_name = eval_names[0] if eval_names else 'eval_0'
-                    current_score = eval_result.get(eval_name, float('inf'))
-                    
-                    # Determine if higher or lower is better
-                    is_higher_better = True
-                    if hasattr(eval_metric, 'is_higher_better'):
-                        is_higher_better = eval_metric.is_higher_better()
-                    
-                    # Check for improvement
-                    if is_higher_better:
-                        improved = current_score > best_score
-                    else:
-                        improved = current_score < best_score
-                    
-                    if improved:
-                        best_score = current_score
-                        best_iteration = iteration
-                        no_improvement_count = 0
-                    else:
-                        no_improvement_count += 1
-                    
-                    if no_improvement_count >= early_stopping_rounds:
-                        self.best_iteration_ = best_iteration
-                        if verbose:
-                            print(f"Early stopping at iteration {iteration + 1}, "
-                                  f"best iteration: {best_iteration + 1}")
-                        break
-                
-                # Print evaluation results if verbose
-                if verbose:
-                    results_str = ", ".join([f"{k}: {v:.6f}" for k, v in eval_result.items()])
-                    print(f"Iteration {iteration + 1}: {results_str}")
-            
-            if verbose and eval_set is None and (iteration + 1) % 10 == 0:
-                train_loss = self.loss_function.loss(y_encoded, y_pred)
-                print(f"Iteration {iteration + 1}/{self.n_estimators}, "
-                      f"train_loss: {train_loss:.6f}")
-        
-        if self.best_iteration_ is None:
-            if self.n_classes_ is not None and self.n_classes_ > 2:
-                self.best_iteration_ = len(self.trees_multiclass[0]) - 1
-            else:
-                self.best_iteration_ = len(self.trees) - 1
+            if self.best_iteration_ is None:
+                if self.n_classes_ is not None and self.n_classes_ > 2:
+                    self.best_iteration_ = len(self.trees_multiclass[0]) - 1
+                else:
+                    self.best_iteration_ = len(self.trees) - 1
+
         
         return self
 

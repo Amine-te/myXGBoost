@@ -230,11 +230,58 @@ class DecisionTree:
             raise ValueError("Tree has not been fitted yet.")
         
         X = np.asarray(X)
-        predictions = np.array([
-            self.root.predict(x) for x in X
-        ])
+        n_samples = X.shape[0]
+        predictions = np.zeros(n_samples, dtype=np.float64)
+        
+        # Start recursion with all indices
+        self._predict_vectorized(self.root, X, np.arange(n_samples), predictions)
         
         return predictions
+    
+    def _predict_vectorized(
+        self,
+        node: TreeNode,
+        X: np.ndarray,
+        indices: np.ndarray,
+        predictions: np.ndarray
+    ):
+        """
+        Helper for vectorized prediction.
+        
+        Parameters
+        ----------
+        node : TreeNode
+            Current node.
+        X : ndarray
+            Full feature matrix.
+        indices : ndarray
+            Indices of samples currently in this node.
+        predictions : ndarray
+            Array to store predictions (modified in-place).
+        """
+        if len(indices) == 0:
+            return
+
+        if node.is_leaf:
+            val = node.leaf_value if node.leaf_value is not None else 0.0
+            predictions[indices] = val
+            return
+        
+        # Get feature values for relevant samples
+        # Use slicing for speed if convenient, but array indexing is needed here
+        values = X[indices, node.split_feature]
+        
+        # Determine split
+        left_mask = values < node.split_threshold
+        
+        # Recurse left
+        # node indices corresponding to left mask
+        left_indices = indices[left_mask]
+        self._predict_vectorized(node.left_child, X, left_indices, predictions)
+        
+        # Recurse right
+        right_indices = indices[~left_mask]
+        self._predict_vectorized(node.right_child, X, right_indices, predictions)
     
     def get_depth(self) -> int:
         """
