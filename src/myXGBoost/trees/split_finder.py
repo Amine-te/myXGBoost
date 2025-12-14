@@ -661,34 +661,67 @@ class ApproximateSplitFinder:
         if len(bins) < 2:
             return None, float('-inf')
         
+        # Filter missing values
+        mask_non_missing = ~np.isnan(feature_values)
+        if not np.any(mask_non_missing):
+            return None, float('-inf')
+            
+        f = feature_values[mask_non_missing]
+        g = grad[mask_non_missing]
+        h = hess[mask_non_missing]
+        
+        # Map values to bin indices: O(N)
+        # np.digitize returns i such that bins[i-1] <= x < bins[i]
+        # Indices will be in range [0, len(bins)]
+        # We assume bins are sorted.
+        indices = np.digitize(f, bins)
+        
+        # Calculate histogram stats: O(N)
+        # Using bincount is much faster than looping
+        minlength = len(bins) + 1
+        g_hist = np.bincount(indices, weights=g, minlength=minlength)
+        h_hist = np.bincount(indices, weights=h, minlength=minlength)
+        
+        # Calculate cumulative stats for fast split evaluation: O(K)
+        # g_cum[i] = sum of gradients for all bins <= i
+        g_cum = np.cumsum(g_hist)
+        h_cum = np.cumsum(h_hist)
+        
+        g_total = g_cum[-1]
+        h_total = h_cum[-1]
+        
         best_threshold = None
         best_gain = float('-inf')
         
-        # Try splits at bin boundaries
-        # Ignore missing values when evaluating histogram splits
-        mask_non_missing = ~np.isnan(feature_values)
-        feat = feature_values[mask_non_missing]
-        grad_masked = grad[mask_non_missing]
-        hess_masked = hess[mask_non_missing]
-
-        for i in range(len(bins) - 1):
-            threshold = (bins[i] + bins[i + 1]) / 2.0
+        # Evaluate splits at each bin boundary: O(K)
+        # Threshold bins[i] implies:
+        # Left node: x < bins[i]  (Indices 0..i)
+        # Right node: x >= bins[i] (Indices i+1..end)
+        # Note: digitize returns index i for x < bins[i]. So indices <= i go left?
+        # Check digitize spec:
+        # if right=False (default): bins[i-1] <= x < bins[i]. returns i.
+        # So x < bins[i] corresponds to indices 0, 1, ..., i.
+        # So cumulative sum up to i gives correct Left statistics for threshold bins[i].
+        
+        for i in range(len(bins)):
+            threshold = bins[i]
             
-            # Split data (non-missing only)
-            mask_split = feat < threshold
-            grad_left = np.sum(grad_masked[mask_split])
-            hess_left = np.sum(hess_masked[mask_split])
-            grad_right = np.sum(grad_masked[~mask_split])
-            hess_right = np.sum(hess_masked[~mask_split])
+            # Left stats
+            g_left = g_cum[i] if i < len(g_cum) else g_total
+            h_left = h_cum[i] if i < len(h_cum) else h_total
+            
+            # Right stats
+            g_right = g_total - g_left
+            h_right = h_total - h_left
             
             # Check constraints
-            if hess_left < self.min_child_weight or hess_right < self.min_child_weight:
+            if h_left < self.min_child_weight or h_right < self.min_child_weight:
                 continue
             
             # Calculate gain
             gain = calculate_gain(
-                grad_left, hess_left,
-                grad_right, hess_right,
+                g_left, h_left,
+                g_right, h_right,
                 self.reg_lambda, self.gamma
             )
             
