@@ -221,7 +221,7 @@ class TestEarlyStopping:
         
         # Should have evaluation results for each iteration
         assert len(booster.eval_results) == len(booster.trees)
-        assert 'val_0' in booster.eval_results[0]
+        assert 'eval_0' in booster.eval_results[0]
 
 
 class TestAdditiveModel:

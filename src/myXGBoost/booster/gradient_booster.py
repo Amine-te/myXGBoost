@@ -177,6 +177,7 @@ class GradientBooster(BoosterBase):
         sample_weight: Optional[np.ndarray] = None,
         eval_set: Optional[List[Tuple[np.ndarray, np.ndarray]]] = None,
         eval_metric: Optional[Callable] = None,
+        eval_names: Optional[List[str]] = None,
         early_stopping_rounds: Optional[int] = None,
         verbose: bool = False
     ):
@@ -192,9 +193,11 @@ class GradientBooster(BoosterBase):
         sample_weight : ndarray, optional
             Sample weights.
         eval_set : list of tuples, optional
-            Validation sets for early stopping.
-        eval_metric : callable, optional
-            Metric function for evaluation.
+            Validation sets for early stopping. Each tuple is (X_eval, y_eval).
+        eval_metric : callable or Metric, optional
+            Metric function for evaluation. Can be a callable or Metric object.
+        eval_names : list of str, optional
+            Names for evaluation sets. Default: ['eval_0', 'eval_1', ...].
         early_stopping_rounds : int, optional
             Number of rounds with no improvement to trigger early stopping.
         verbose : bool, default=False
@@ -237,7 +240,12 @@ class GradientBooster(BoosterBase):
         self.eval_sets = eval_set
         self.eval_metric = eval_metric
         self.eval_results = []
-        best_score = float('inf')
+        
+        # Set default eval names
+        if eval_set is not None and eval_names is None:
+            eval_names = [f'eval_{i}' for i in range(len(eval_set))]
+        
+        best_score = float('inf') if (eval_metric is not None and hasattr(eval_metric, 'is_higher_better') and not eval_metric.is_higher_better()) or (callable(eval_metric) and not hasattr(eval_metric, 'is_higher_better')) else float('-inf')
         best_iteration = 0
         no_improvement_count = 0
         
@@ -283,16 +291,40 @@ class GradientBooster(BoosterBase):
                 eval_result = {}
                 for i, (X_eval, y_eval) in enumerate(eval_set):
                     y_pred_eval = self._predict_raw(X_eval)
-                    score = eval_metric(y_eval, y_pred_eval)
-                    eval_result[f'val_{i}'] = score
+                    
+                    # Support both function-based and Metric class-based metrics
+                    if hasattr(eval_metric, 'score'):
+                        # Metric class
+                        score = eval_metric.score(y_eval, y_pred_eval)
+                        metric_name = eval_metric.name
+                    else:
+                        # Function-based metric
+                        score = eval_metric(y_eval, y_pred_eval)
+                        metric_name = 'metric'
+                    
+                    eval_name = eval_names[i] if eval_names else f'eval_{i}'
+                    eval_result[eval_name] = score
                 
                 self.eval_results.append(eval_result)
                 
                 # Early stopping check
                 if early_stopping_rounds is not None:
                     # Use first validation set for early stopping
-                    current_score = eval_result.get('val_0', float('inf'))
-                    if current_score < best_score:
+                    eval_name = eval_names[0] if eval_names else 'eval_0'
+                    current_score = eval_result.get(eval_name, float('inf'))
+                    
+                    # Determine if higher or lower is better
+                    is_higher_better = True
+                    if hasattr(eval_metric, 'is_higher_better'):
+                        is_higher_better = eval_metric.is_higher_better()
+                    
+                    # Check for improvement
+                    if is_higher_better:
+                        improved = current_score > best_score
+                    else:
+                        improved = current_score < best_score
+                    
+                    if improved:
                         best_score = current_score
                         best_iteration = iteration
                         no_improvement_count = 0
@@ -305,8 +337,13 @@ class GradientBooster(BoosterBase):
                             print(f"Early stopping at iteration {iteration + 1}, "
                                   f"best iteration: {best_iteration + 1}")
                         break
+                
+                # Print evaluation results if verbose
+                if verbose:
+                    results_str = ", ".join([f"{k}: {v:.6f}" for k, v in eval_result.items()])
+                    print(f"Iteration {iteration + 1}: {results_str}")
             
-            if verbose and (iteration + 1) % 10 == 0:
+            if verbose and eval_set is None and (iteration + 1) % 10 == 0:
                 train_loss = self.loss_function.loss(y_encoded, y_pred)
                 print(f"Iteration {iteration + 1}/{self.n_estimators}, "
                       f"train_loss: {train_loss:.6f}")
@@ -315,6 +352,7 @@ class GradientBooster(BoosterBase):
             self.best_iteration_ = len(self.trees) - 1
         
         return self
+
     
     def _predict_raw(self, X: np.ndarray) -> np.ndarray:
         """
