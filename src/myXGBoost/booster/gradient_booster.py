@@ -6,6 +6,7 @@ from typing import Optional, List, Tuple, Callable
 from myXGBoost.trees.decision_tree import DecisionTree
 from myXGBoost.loss.base import LossFunction
 from joblib import Parallel, delayed
+from myXGBoost.utils.parallel import compute_gradients_parallel
 
 
 class BoosterBase(ABC):
@@ -98,6 +99,12 @@ class GradientBooster(BoosterBase):
         Switch to approximate method above this sample count.
     max_bins : int, default=256
         Maximum bins for histogram construction.
+    use_parallel_gradients : bool, default=False
+        Whether to compute gradients in parallel across data chunks.
+        Default False for backward compatibility.
+    n_jobs_gradients : int, default=-1
+        Number of parallel jobs for gradient computation. -1 means use all cores.
+        Only used if use_parallel_gradients=True.
     """
     
     def __init__(
@@ -114,7 +121,9 @@ class GradientBooster(BoosterBase):
         random_state: Optional[int] = None,
         use_hybrid_split_finder: bool = True,
         exact_threshold: int = 10000,
-        max_bins: int = 256
+        max_bins: int = 256,
+        use_parallel_gradients: bool = False,
+        n_jobs_gradients: int = -1
     ):
         self.loss_function = loss_function
         self.n_estimators = n_estimators
@@ -129,6 +138,8 @@ class GradientBooster(BoosterBase):
         self.use_hybrid_split_finder = use_hybrid_split_finder
         self.exact_threshold = exact_threshold
         self.max_bins = max_bins
+        self.use_parallel_gradients = use_parallel_gradients
+        self.n_jobs_gradients = n_jobs_gradients
         
         # Model state
         self.trees: List[DecisionTree] = []  # For binary/regression
@@ -337,7 +348,16 @@ class GradientBooster(BoosterBase):
         with Parallel(n_jobs=-1) as parallel:
             for iteration in range(self.n_estimators):
                 # Compute gradients and hessians
-                grad, hess = self.loss_function.grad_hess(y_encoded, y_pred)
+                if self.use_parallel_gradients:
+                    grad, hess = compute_gradients_parallel(
+                        self.loss_function,
+                        y_encoded,
+                        y_pred,
+                        n_jobs=self.n_jobs_gradients
+                    )
+                else:
+                    # Sequential computation (backward compatible default)
+                    grad, hess = self.loss_function.grad_hess(y_encoded, y_pred)
                 
                 # Apply sample weights if provided
                 if sample_weight is not None:

@@ -4,6 +4,7 @@ import numpy as np
 from typing import Tuple, Optional, Union
 from multiprocessing import Pool, cpu_count
 import warnings
+from myXGBoost.utils.parallel import build_histogram_parallel
 
 
 def calculate_gain(
@@ -583,6 +584,12 @@ class ApproximateSplitFinder:
         Whether to parallelize feature evaluation across cores.
     n_jobs : int, default=-1
         Number of parallel jobs. -1 means use all cores.
+    use_parallel_histograms : bool, default=False
+        Whether to build histograms in parallel across data chunks.
+        Default False for backward compatibility.
+    n_jobs_histograms : int, default=-1
+        Number of parallel jobs for histogram building. -1 means use all cores.
+        Only used if use_parallel_histograms=True.
     """
     
     def __init__(
@@ -592,13 +599,17 @@ class ApproximateSplitFinder:
         min_child_weight: float = 1.0,
         max_bins: int = 256,
         use_parallelization: bool = True,
-        n_jobs: int = -1
+        n_jobs: int = -1,
+        use_parallel_histograms: bool = False,
+        n_jobs_histograms: int = -1
     ):
         self.reg_lambda = reg_lambda
         self.gamma = gamma
         self.min_child_weight = min_child_weight
         self.max_bins = max_bins
         self.use_parallelization = use_parallelization
+        self.use_parallel_histograms = use_parallel_histograms
+        self.n_jobs_histograms = n_jobs_histograms
         
         if n_jobs == -1:
             self.n_jobs = cpu_count()
@@ -670,17 +681,25 @@ class ApproximateSplitFinder:
         g = grad[mask_non_missing]
         h = hess[mask_non_missing]
         
-        # Map values to bin indices: O(N)
-        # np.digitize returns i such that bins[i-1] <= x < bins[i]
-        # Indices will be in range [0, len(bins)]
-        # We assume bins are sorted.
-        indices = np.digitize(f, bins)
-        
-        # Calculate histogram stats: O(N)
-        # Using bincount is much faster than looping
-        minlength = len(bins) + 1
-        g_hist = np.bincount(indices, weights=g, minlength=minlength)
-        h_hist = np.bincount(indices, weights=h, minlength=minlength)
+        # Build histogram stats: O(N)
+        # Use parallel histogram building if enabled
+        if self.use_parallel_histograms:
+            g_hist, h_hist = build_histogram_parallel(
+                f, g, h, bins, n_jobs=self.n_jobs_histograms
+            )
+        else:
+            # Sequential histogram building (backward compatible default)
+            # Map values to bin indices: O(N)
+            # np.digitize returns i such that bins[i-1] <= x < bins[i]
+            # Indices will be in range [0, len(bins)]
+            # We assume bins are sorted.
+            indices = np.digitize(f, bins)
+            
+            # Calculate histogram stats: O(N)
+            # Using bincount is much faster than looping
+            minlength = len(bins) + 1
+            g_hist = np.bincount(indices, weights=g, minlength=minlength)
+            h_hist = np.bincount(indices, weights=h, minlength=minlength)
         
         # Calculate cumulative stats for fast split evaluation: O(K)
         # g_cum[i] = sum of gradients for all bins <= i
@@ -966,6 +985,12 @@ class HybridSplitFinder:
         Whether to use parallelization in approximate method.
     n_jobs : int, default=-1
         Number of parallel jobs.
+    use_parallel_histograms : bool, default=False
+        Whether to build histograms in parallel across data chunks.
+        Default False for backward compatibility.
+    n_jobs_histograms : int, default=-1
+        Number of parallel jobs for histogram building. -1 means use all cores.
+        Only used if use_parallel_histograms=True.
     """
     
     def __init__(
@@ -976,7 +1001,9 @@ class HybridSplitFinder:
         min_child_weight: float = 1.0,
         max_bins: int = 256,
         use_parallelization: bool = True,
-        n_jobs: int = -1
+        n_jobs: int = -1,
+        use_parallel_histograms: bool = False,
+        n_jobs_histograms: int = -1
     ):
         self.exact_threshold = exact_threshold
         self.reg_lambda = reg_lambda
@@ -985,6 +1012,8 @@ class HybridSplitFinder:
         self.max_bins = max_bins
         self.use_parallelization = use_parallelization
         self.n_jobs = n_jobs
+        self.use_parallel_histograms = use_parallel_histograms
+        self.n_jobs_histograms = n_jobs_histograms
         
         # Initialize both finders
         self.exact_finder = ExactSplitFinder(
@@ -999,7 +1028,9 @@ class HybridSplitFinder:
             min_child_weight=min_child_weight,
             max_bins=max_bins,
             use_parallelization=use_parallelization,
-            n_jobs=n_jobs
+            n_jobs=n_jobs,
+            use_parallel_histograms=use_parallel_histograms,
+            n_jobs_histograms=n_jobs_histograms
         )
     
     def find_best_split(
@@ -1129,3 +1160,4 @@ class HybridSplitFinder:
         hess_right = hess[final_right_mask]
 
         return X_left, grad_left, hess_left, X_right, grad_right, hess_right
+        
