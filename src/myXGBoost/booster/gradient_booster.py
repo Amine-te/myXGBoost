@@ -34,6 +34,10 @@ class GradientBooster(BoosterBase):
     - Iteratively add trees
     - Update prediction: y_pred += learning_rate * tree.predict(X)
     
+    Uses hybrid split finding for automatic optimization selection.
+    For small datasets uses exact greedy algorithm.
+    For large datasets uses approximate histogram-based algorithm.
+    
     Parameters
     ----------
     loss_function : LossFunction
@@ -56,6 +60,12 @@ class GradientBooster(BoosterBase):
         Column subsampling ratio.
     random_state : int, optional
         Random seed for reproducibility.
+    use_hybrid_split_finder : bool, default=True
+        Whether to use adaptive split finding (exact/approximate hybrid).
+    exact_threshold : int, default=10000
+        Switch to approximate method above this sample count.
+    max_bins : int, default=256
+        Maximum bins for histogram construction.
     """
     
     def __init__(
@@ -69,7 +79,10 @@ class GradientBooster(BoosterBase):
         reg_lambda: float = 1.0,
         subsample: float = 1.0,
         colsample_bytree: float = 1.0,
-        random_state: Optional[int] = None
+        random_state: Optional[int] = None,
+        use_hybrid_split_finder: bool = True,
+        exact_threshold: int = 10000,
+        max_bins: int = 256
     ):
         self.loss_function = loss_function
         self.n_estimators = n_estimators
@@ -81,6 +94,9 @@ class GradientBooster(BoosterBase):
         self.subsample = subsample
         self.colsample_bytree = colsample_bytree
         self.random_state = random_state
+        self.use_hybrid_split_finder = use_hybrid_split_finder
+        self.exact_threshold = exact_threshold
+        self.max_bins = max_bins
         
         # Model state
         self.trees: List[DecisionTree] = []
@@ -268,12 +284,15 @@ class GradientBooster(BoosterBase):
             # Column subsampling
             feature_indices = self._sample_features(n_features)
             
-            # Build tree
+            # Build tree with hybrid split finding
             tree = DecisionTree(
                 max_depth=self.max_depth,
                 min_child_weight=self.min_child_weight,
                 reg_lambda=self.reg_lambda,
-                gamma=self.gamma
+                gamma=self.gamma,
+                use_hybrid_split_finder=self.use_hybrid_split_finder,
+                exact_threshold=self.exact_threshold,
+                max_bins=self.max_bins
             )
             tree.fit(X_sampled, grad_sampled, hess_sampled, feature_indices)
             

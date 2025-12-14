@@ -3,7 +3,7 @@
 import numpy as np
 from typing import Optional
 from myXGBoost.base.tree import TreeNode
-from myXGBoost.trees.split_finder import ExactSplitFinder
+from myXGBoost.trees.split_finder import ExactSplitFinder, HybridSplitFinder
 from myXGBoost.trees.leaf import calculate_leaf_weight
 
 
@@ -13,6 +13,9 @@ class DecisionTree:
     
     This tree stores gradient and hessian statistics at each node
     and uses them to find optimal splits and calculate leaf values.
+    
+    Supports both exact and approximate (histogram-based) split finding
+    with automatic algorithm selection based on dataset size.
     
     Parameters
     ----------
@@ -24,6 +27,15 @@ class DecisionTree:
         L2 regularization parameter.
     gamma : float, default=0.0
         Minimum loss reduction (gamma regularization).
+    use_hybrid_split_finder : bool, default=True
+        Whether to use hybrid (adaptive) split finder that chooses
+        between exact and approximate methods based on dataset size.
+    exact_threshold : int, default=10000
+        Threshold for switching from exact to approximate algorithm.
+        Used only if use_hybrid_split_finder=True.
+    max_bins : int, default=256
+        Maximum number of bins for histogram construction
+        in approximate method. Used only if use_hybrid_split_finder=True.
     """
     
     def __init__(
@@ -31,19 +43,39 @@ class DecisionTree:
         max_depth: int = 6,
         min_child_weight: float = 1.0,
         reg_lambda: float = 1.0,
-        gamma: float = 0.0
+        gamma: float = 0.0,
+        use_hybrid_split_finder: bool = True,
+        exact_threshold: int = 10000,
+        max_bins: int = 256
     ):
         self.max_depth = max_depth
         self.min_child_weight = min_child_weight
         self.reg_lambda = reg_lambda
         self.gamma = gamma
+        self.use_hybrid_split_finder = use_hybrid_split_finder
+        self.exact_threshold = exact_threshold
+        self.max_bins = max_bins
         
         self.root = None
-        self.split_finder = ExactSplitFinder(
-            reg_lambda=reg_lambda,
-            gamma=gamma,
-            min_child_weight=min_child_weight
-        )
+        
+        # Initialize split finder based on configuration
+        if use_hybrid_split_finder:
+            self.split_finder = HybridSplitFinder(
+                exact_threshold=exact_threshold,
+                reg_lambda=reg_lambda,
+                gamma=gamma,
+                min_child_weight=min_child_weight,
+                max_bins=max_bins,
+                use_parallelization=True,  # Enable parallelization
+                n_jobs=-1  # Use all cores
+            )
+        else:
+            self.split_finder = ExactSplitFinder(
+                reg_lambda=reg_lambda,
+                gamma=gamma,
+                min_child_weight=min_child_weight,
+                use_vectorization=True
+            )
     
     def fit(
         self,
