@@ -1,6 +1,6 @@
 """Base classes for myXGBoost estimators."""
 
-from myxgboost.base.base import BaseXGBoost
+from myXGBoost.base.base import BaseEstimator, RegressorMixin, ClassifierMixin
 
-__all__ = ["BaseXGBoost"]
+__all__ = ["BaseEstimator", "RegressorMixin", "ClassifierMixin"]
 

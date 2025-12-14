@@ -1,0 +1,9 @@
+# Core dependencies for myXGBoost
+# Note: This is a standalone implementation, no xgboost or sklearn dependencies
+
+# Numerical computing
+numpy>=1.20.0
+
+# Scientific computing (for advanced math operations if needed)
+scipy>=1.7.0
+
