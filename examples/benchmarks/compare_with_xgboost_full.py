@@ -240,6 +240,96 @@ def run_classification(n_runs=3, n_samples=5000, n_features=30, n_estimators=100
     return summary_rows
 
 
+def run_multiclass_classification(n_runs=3, n_samples=5000, n_features=30, n_classes=3, n_estimators=100, out_dir='multiclass_results', random_state=42):
+    ensure_dir(out_dir)
+    _, XGBClf = try_import_xgboost()
+    if XGBClf is None:
+        raise RuntimeError('xgboost not installed')
+
+    summary_rows = []
+    rng = np.random.RandomState(random_state)
+    for run in range(n_runs):
+        seed = rng.randint(0, 2**31 - 1)
+        # Generate multiclass dataset
+        X, y = make_classification(n_samples=n_samples, n_features=n_features, n_informative=min(10, n_features), n_classes=n_classes, random_state=seed)
+        split = int(n_samples * 0.8)
+        X_train, X_test = X[:split], X[split:]
+        y_train, y_test = y[:split], y[split:]
+
+        params = dict(n_estimators=n_estimators, random_state=seed, use_label_encoder=False)
+        # xgboost requires num_class for multiclass if using objective='multi:softmax', but sklearn API handles it generally. 
+        # We can let it auto-detect or specify objective if needed. Auto-detect usually works for sklearn-API XGBClassifier.
+
+        # myXGBoost classifier
+        my = MyXGBClf(n_estimators=n_estimators, random_state=seed)
+        t0 = time.time(); my.fit(X_train, y_train); t1 = time.time()
+        y_my_proba = my.predict_proba(X_test)
+        y_my_label = my.predict(X_test)
+        my_time = t1 - t0
+
+        # xgboost classifier
+        xgb = XGBClf(n_estimators=n_estimators, random_state=seed, use_label_encoder=False, eval_metric='mlogloss')
+        t0 = time.time(); xgb.fit(X_train, y_train); t1 = time.time()
+        y_xgb_proba = xgb.predict_proba(X_test)
+        y_xgb_label = xgb.predict(X_test)
+        xgb_time = t1 - t0
+
+        # metrics
+        my_acc = float(accuracy_score(y_test, y_my_label))
+        xgb_acc = float(accuracy_score(y_test, y_xgb_label))
+        
+        # log_loss requires probabilities
+        my_logloss = float(log_loss(y_test, y_my_proba))
+        xgb_logloss = float(log_loss(y_test, y_xgb_proba))
+        
+        # Macro-averaged AUC if supported (needs One-vs-Rest or similar handling usually, default 'ovr' in recent sklearn)
+        try:
+            my_auc = float(roc_auc_score(y_test, y_my_proba, multi_class='ovr'))
+        except Exception:
+            my_auc = float('nan')
+        try:
+            xgb_auc = float(roc_auc_score(y_test, y_xgb_proba, multi_class='ovr'))
+        except Exception:
+            xgb_auc = float('nan')
+
+        # save per-run predictions
+        tstamp = datetime.utcnow().strftime('%Y%m%dT%H%M%S')
+        preds_fname = os.path.join(out_dir, f'preds_multiclass_run{run+1}_{tstamp}.csv')
+        # Stacking probabilities is harder for multiclass (n_classes columns). We'll save just labels for simplicity or flatten.
+        # Let's simple save labels.
+        stacked = np.column_stack([y_test, y_my_label, y_xgb_label])
+        np.savetxt(preds_fname, stacked, delimiter=',', header='y_true,my_label,xgb_label', comments='')
+
+        row = {
+            'run': run + 1,
+            'seed': seed,
+            'n_samples': n_samples,
+            'n_features': n_features,
+            'n_classes': n_classes,
+            'n_estimators': n_estimators,
+            'my_time': my_time,
+            'my_acc': my_acc,
+            'my_logloss': my_logloss,
+            'my_auc': my_auc,
+            'xgb_time': xgb_time,
+            'xgb_acc': xgb_acc,
+            'xgb_logloss': xgb_logloss,
+            'xgb_auc': xgb_auc,
+            'predictions_file': preds_fname
+        }
+        summary_rows.append(row)
+
+    # write aggregate per-run CSV
+    out_summary = os.path.join(out_dir, 'multiclass_runs.csv')
+    keys = list(summary_rows[0].keys())
+    with open(out_summary, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=keys)
+        writer.writeheader()
+        writer.writerows(summary_rows)
+
+    return summary_rows
+
+
 def summarize_and_save(summary_rows, out_path):
     # compute mean/std for numeric columns
     import pandas as pd
@@ -250,10 +340,15 @@ def summarize_and_save(summary_rows, out_path):
 
 
 if __name__ == '__main__':
+    # Get the directory where this script is located
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    
     # default run settings (adjustable)
-    REG_OUT = 'regression_results'
-    CLF_OUT = 'classification_results'
+    REG_OUT = os.path.join(BASE_DIR, 'regression_results')
+    CLF_OUT = os.path.join(BASE_DIR, 'classification_results')
+    MULTI_OUT = os.path.join(BASE_DIR, 'multiclass_results')
     runs = 3
+    
     try:
         reg_rows = run_regression(n_runs=runs, n_samples=5000, n_features=30, n_estimators=100, out_dir=REG_OUT)
         clf_rows = run_classification(n_runs=runs, n_samples=5000, n_features=30, n_estimators=100, out_dir=CLF_OUT)
@@ -266,6 +361,19 @@ if __name__ == '__main__':
         except Exception as e:
             print('Could not write summary stats (pandas required):', e)
 
-        print('Completed full comparison. See folders:', REG_OUT, CLF_OUT)
+        # Multiclass benchmark
+        try:
+            multi_rows = run_multiclass_classification(n_runs=runs, n_samples=5000, n_features=30, n_classes=3, n_estimators=100, out_dir=MULTI_OUT)
+            try:
+                summarize_and_save(multi_rows, os.path.join(MULTI_OUT, 'multiclass_summary_stats.csv'))
+            except Exception as e:
+                print('Could not write summary stats (pandas required):', e)
+        except Exception as e:
+            print('Multiclass benchmark failed (possibly due to missing dependencies or implementation issues):', e)
+
+        print('Completed full comparison. See folders:')
+        print('  RMSE/Results:', REG_OUT)
+        print('  Classification:', CLF_OUT)
+        print('  Multiclass:', MULTI_OUT)
     except Exception as e:
         print('Comparison failed:', e)
