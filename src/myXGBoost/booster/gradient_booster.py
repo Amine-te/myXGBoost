@@ -45,7 +45,7 @@ def _train_single_tree(
     preds : ndarray
         Predictions on the full dataset X.
     """
-    X_sampled = X[row_indices]
+    X_sampled = np.asfortranarray(X[row_indices])
     grad_sampled = grad[row_indices]
     hess_sampled = hess[row_indices]
     
@@ -265,7 +265,7 @@ class GradientBooster(BoosterBase):
         self : object
             Returns self.
         """
-        X = np.asarray(X, dtype=np.float64)
+        X = np.asfortranarray(X, dtype=np.float64)
         y = np.asarray(y, dtype=np.float64)
         
         n_samples, n_features = X.shape
@@ -389,7 +389,7 @@ class GradientBooster(BoosterBase):
                     # Binary or regression: single tree per iteration
                     # Row subsampling
                     row_indices = self._sample_rows(n_samples)
-                    X_sampled = X[row_indices]
+                    X_sampled = np.asfortranarray(X[row_indices])
                     grad_sampled = grad[row_indices]
                     hess_sampled = hess[row_indices]
                     
