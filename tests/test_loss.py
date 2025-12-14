@@ -189,8 +189,10 @@ class TestLogisticLoss:
         # Gradients should be in reasonable range
         assert np.all(np.abs(grad) <= 1.0)
         
-        # Hessians should be in (0, 0.25] (max when p=0.5)
-        assert np.all(hess > 0)
+        # Hessians should be in [0, 0.25] (max when p=0.5)
+        # Note: For extreme values, hessian can be exactly 0.0 due to numerical precision
+        # (when p is very close to 0 or 1, p*(1-p) underflows to 0)
+        assert np.all(hess >= 0)
         assert np.all(hess <= 0.25)
     
     def test_hessian_properties(self):
