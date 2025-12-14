@@ -18,14 +18,26 @@ def compute_feature_importance(booster, importance_type: str = "gain") -> Dict[i
     importance_type: 'gain' | 'weight' | 'cover'
     Returns mapping {feature_index: importance_value}
     """
-    if not hasattr(booster, 'trees'):
-        raise ValueError("Booster has no attribute 'trees'")
+    # Collect all trees (binary/regression or multiclass)
+    all_trees = []
+    if hasattr(booster, 'trees') and booster.trees:
+        all_trees.extend(booster.trees)
+    
+    if hasattr(booster, 'trees_multiclass') and booster.trees_multiclass:
+        for class_trees in booster.trees_multiclass:
+            all_trees.extend(class_trees)
+            
+    if not all_trees:
+        # If no trees found, return empty dict or raise error if expected
+        # For a fitted booster, we might expect at least one tree, or maybe it's just initialized.
+        # Check if it was supposed to have trees.
+        return {}
 
     n_features = getattr(booster, 'n_features_', None)
     if n_features is None:
         # try to infer
         n_features = 0
-        for t in booster.trees:
+        for t in all_trees:
             if t.root is not None:
                 # assume number of features equals max split feature + 1
                 def _check(n):
@@ -36,7 +48,7 @@ def compute_feature_importance(booster, importance_type: str = "gain") -> Dict[i
 
     imp = {i: 0.0 for i in range(n_features)}
 
-    for tree in booster.trees:
+    for tree in all_trees:
         root = getattr(tree, 'root', None)
         if root is None:
             continue
