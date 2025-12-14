@@ -232,8 +232,16 @@ class ExactSplitFinder:
             Gain of the best split. -inf if no valid split found.
         """
         # Get unique sorted values
-        unique_values = np.unique(feature_values)
-        
+        # Ignore missing values when searching for splits
+        mask = ~np.isnan(feature_values)
+        if not np.any(mask):
+            return None, float('-inf')
+
+        feat = feature_values[mask]
+        grad_masked = grad[mask]
+        hess_masked = hess[mask]
+
+        unique_values = np.unique(feat)
         if len(unique_values) < 2:
             return None, float('-inf')
         
@@ -242,10 +250,11 @@ class ExactSplitFinder:
         best_gain = float('-inf')
         
         # Sort indices by feature values
-        sorted_indices = np.argsort(feature_values)
-        sorted_values = feature_values[sorted_indices]
-        sorted_grad = grad[sorted_indices]
-        sorted_hess = hess[sorted_indices]
+        # Sort non-missing values
+        sorted_indices = np.argsort(feat)
+        sorted_values = feat[sorted_indices]
+        sorted_grad = grad_masked[sorted_indices]
+        sorted_hess = hess_masked[sorted_indices]
         
         # Initialize left and right statistics
         grad_left = 0.0
@@ -315,16 +324,15 @@ class ExactSplitFinder:
             Gain of the best split. -inf if no valid split found.
         """
         # Get unique sorted values
-        unique_values = np.unique(feature_values)
-        
-        if len(unique_values) < 2:
+        # Ignore missing values when searching for splits
+        mask = ~np.isnan(feature_values)
+        if not np.any(mask):
             return None, float('-inf')
-        
-        # Sort indices by feature values
-        sorted_indices = np.argsort(feature_values)
-        sorted_values = feature_values[sorted_indices]
-        sorted_grad = grad[sorted_indices]
-        sorted_hess = hess[sorted_indices]
+
+        sorted_indices = np.argsort(feature_values[mask])
+        sorted_values = feature_values[mask][sorted_indices]
+        sorted_grad = grad[mask][sorted_indices]
+        sorted_hess = hess[mask][sorted_indices]
         
         # Use cumulative sums for fast computation
         # cumsum[i] = sum of first i elements
@@ -411,16 +419,64 @@ class ExactSplitFinder:
         X_right, grad_right, hess_right : ndarray
             Data for right child (feature >= threshold).
         """
-        mask = X[:, feature] < threshold
-        
-        X_left = X[mask]
-        grad_left = grad[mask]
-        hess_left = hess[mask]
-        
-        X_right = X[~mask]
-        grad_right = grad[~mask]
-        hess_right = hess[~mask]
-        
+        # Handle missing values (NaN) in the feature by assigning them to
+        # the side (left/right) that yields the higher gain.
+        feature_col = X[:, feature]
+        missing_mask = np.isnan(feature_col)
+
+        # Non-missing split
+        non_missing_mask = ~missing_mask
+        mask = feature_col[non_missing_mask] < threshold
+
+        # Stats for non-missing
+        grad_left_non = np.sum(grad[non_missing_mask][mask])
+        hess_left_non = np.sum(hess[non_missing_mask][mask])
+        grad_right_non = np.sum(grad[non_missing_mask][~mask])
+        hess_right_non = np.sum(hess[non_missing_mask][~mask])
+
+        # Stats for missing
+        grad_missing = np.sum(grad[missing_mask]) if np.any(missing_mask) else 0.0
+        hess_missing = np.sum(hess[missing_mask]) if np.any(missing_mask) else 0.0
+
+        # Option 1: assign missing to left
+        g_left1 = grad_left_non + grad_missing
+        h_left1 = hess_left_non + hess_missing
+        g_right1 = grad_right_non
+        h_right1 = hess_right_non
+        gain_left = calculate_gain(g_left1, h_left1, g_right1, h_right1, reg_lambda=self.reg_lambda, gamma=self.gamma)
+
+        # Option 2: assign missing to right
+        g_left2 = grad_left_non
+        h_left2 = hess_left_non
+        g_right2 = grad_right_non + grad_missing
+        h_right2 = hess_right_non + hess_missing
+        gain_right = calculate_gain(g_left2, h_left2, g_right2, h_right2, reg_lambda=self.reg_lambda, gamma=self.gamma)
+
+        assign_missing_to_left = gain_left >= gain_right
+
+        # Build final masks including missing values
+        final_left_mask = np.zeros_like(feature_col, dtype=bool)
+        final_right_mask = np.zeros_like(feature_col, dtype=bool)
+
+        # Fill non-missing
+        final_left_mask[non_missing_mask] = mask
+        final_right_mask[non_missing_mask] = ~mask
+
+        # Assign missing according to chosen side
+        if np.any(missing_mask):
+            if assign_missing_to_left:
+                final_left_mask[missing_mask] = True
+            else:
+                final_right_mask[missing_mask] = True
+
+        X_left = X[final_left_mask]
+        grad_left = grad[final_left_mask]
+        hess_left = hess[final_left_mask]
+
+        X_right = X[final_right_mask]
+        grad_right = grad[final_right_mask]
+        hess_right = hess[final_right_mask]
+
         return X_left, grad_left, hess_left, X_right, grad_right, hess_right
 
 
@@ -453,8 +509,9 @@ class WeightedQuantileSketch:
         weights : ndarray of shape (n,)
             Sample weights (typically absolute gradient values).
         """
-        # Sort and merge new values
-        for val, weight in zip(values, weights):
+        # Ignore missing values and append
+        mask = ~np.isnan(values)
+        for val, weight in zip(values[mask], weights[mask]):
             self.data.append((float(val), float(weight)))
     
     def get_bins(self, n_bins: int) -> np.ndarray:
@@ -608,15 +665,21 @@ class ApproximateSplitFinder:
         best_gain = float('-inf')
         
         # Try splits at bin boundaries
+        # Ignore missing values when evaluating histogram splits
+        mask_non_missing = ~np.isnan(feature_values)
+        feat = feature_values[mask_non_missing]
+        grad_masked = grad[mask_non_missing]
+        hess_masked = hess[mask_non_missing]
+
         for i in range(len(bins) - 1):
             threshold = (bins[i] + bins[i + 1]) / 2.0
             
-            # Split data
-            mask = feature_values < threshold
-            grad_left = np.sum(grad[mask])
-            hess_left = np.sum(hess[mask])
-            grad_right = np.sum(grad[~mask])
-            hess_right = np.sum(hess[~mask])
+            # Split data (non-missing only)
+            mask_split = feat < threshold
+            grad_left = np.sum(grad_masked[mask_split])
+            hess_left = np.sum(hess_masked[mask_split])
+            grad_right = np.sum(grad_masked[~mask_split])
+            hess_right = np.sum(hess_masked[~mask_split])
             
             # Check constraints
             if hess_left < self.min_child_weight or hess_right < self.min_child_weight:
@@ -785,16 +848,64 @@ class ApproximateSplitFinder:
         X_right, grad_right, hess_right : ndarray
             Data for right child.
         """
-        mask = X[:, feature] < threshold
-        
-        X_left = X[mask]
-        grad_left = grad[mask]
-        hess_left = hess[mask]
-        
-        X_right = X[~mask]
-        grad_right = grad[~mask]
-        hess_right = hess[~mask]
-        
+        # Handle missing values (NaN) in the feature by assigning them to
+        # the side (left/right) that yields the higher gain.
+        feature_col = X[:, feature]
+        missing_mask = np.isnan(feature_col)
+
+        # Non-missing split
+        non_missing_mask = ~missing_mask
+        mask = feature_col[non_missing_mask] < threshold
+
+        # Stats for non-missing
+        grad_left_non = np.sum(grad[non_missing_mask][mask])
+        hess_left_non = np.sum(hess[non_missing_mask][mask])
+        grad_right_non = np.sum(grad[non_missing_mask][~mask])
+        hess_right_non = np.sum(hess[non_missing_mask][~mask])
+
+        # Stats for missing
+        grad_missing = np.sum(grad[missing_mask]) if np.any(missing_mask) else 0.0
+        hess_missing = np.sum(hess[missing_mask]) if np.any(missing_mask) else 0.0
+
+        # Option 1: assign missing to left
+        g_left1 = grad_left_non + grad_missing
+        h_left1 = hess_left_non + hess_missing
+        g_right1 = grad_right_non
+        h_right1 = hess_right_non
+        gain_left = calculate_gain(g_left1, h_left1, g_right1, h_right1, reg_lambda=self.reg_lambda, gamma=self.gamma)
+
+        # Option 2: assign missing to right
+        g_left2 = grad_left_non
+        h_left2 = hess_left_non
+        g_right2 = grad_right_non + grad_missing
+        h_right2 = hess_right_non + hess_missing
+        gain_right = calculate_gain(g_left2, h_left2, g_right2, h_right2, reg_lambda=self.reg_lambda, gamma=self.gamma)
+
+        assign_missing_to_left = gain_left >= gain_right
+
+        # Build final masks including missing values
+        final_left_mask = np.zeros_like(feature_col, dtype=bool)
+        final_right_mask = np.zeros_like(feature_col, dtype=bool)
+
+        # Fill non-missing
+        final_left_mask[non_missing_mask] = mask
+        final_right_mask[non_missing_mask] = ~mask
+
+        # Assign missing according to chosen side
+        if np.any(missing_mask):
+            if assign_missing_to_left:
+                final_left_mask[missing_mask] = True
+            else:
+                final_right_mask[missing_mask] = True
+
+        X_left = X[final_left_mask]
+        grad_left = grad[final_left_mask]
+        hess_left = hess[final_left_mask]
+
+        X_right = X[final_right_mask]
+        grad_right = grad[final_right_mask]
+        hess_right = hess[final_right_mask]
+
         return X_left, grad_left, hess_left, X_right, grad_right, hess_right
 
 
@@ -932,14 +1043,56 @@ class HybridSplitFinder:
         X_right, grad_right, hess_right : ndarray
             Data for right child.
         """
-        mask = X[:, feature] < threshold
-        
-        X_left = X[mask]
-        grad_left = grad[mask]
-        hess_left = hess[mask]
-        
-        X_right = X[~mask]
-        grad_right = grad[~mask]
-        hess_right = hess[~mask]
-        
+        # Make split_data sparsity-aware (handle NaNs)
+        feature_col = X[:, feature]
+        missing_mask = np.isnan(feature_col)
+
+        non_missing_mask = ~missing_mask
+        mask = feature_col[non_missing_mask] < threshold
+
+        # Stats for non-missing
+        grad_left_non = np.sum(grad[non_missing_mask][mask])
+        hess_left_non = np.sum(hess[non_missing_mask][mask])
+        grad_right_non = np.sum(grad[non_missing_mask][~mask])
+        hess_right_non = np.sum(hess[non_missing_mask][~mask])
+
+        # Stats for missing
+        grad_missing = np.sum(grad[missing_mask]) if np.any(missing_mask) else 0.0
+        hess_missing = np.sum(hess[missing_mask]) if np.any(missing_mask) else 0.0
+
+        # Option 1: assign missing to left
+        g_left1 = grad_left_non + grad_missing
+        h_left1 = hess_left_non + hess_missing
+        g_right1 = grad_right_non
+        h_right1 = hess_right_non
+        gain_left = calculate_gain(g_left1, h_left1, g_right1, h_right1, reg_lambda=self.reg_lambda, gamma=self.gamma)
+
+        # Option 2: assign missing to right
+        g_left2 = grad_left_non
+        h_left2 = hess_left_non
+        g_right2 = grad_right_non + grad_missing
+        h_right2 = hess_right_non + hess_missing
+        gain_right = calculate_gain(g_left2, h_left2, g_right2, h_right2, reg_lambda=self.reg_lambda, gamma=self.gamma)
+
+        assign_missing_to_left = gain_left >= gain_right
+
+        # Build final masks
+        final_left_mask = np.zeros_like(feature_col, dtype=bool)
+        final_right_mask = np.zeros_like(feature_col, dtype=bool)
+        final_left_mask[non_missing_mask] = mask
+        final_right_mask[non_missing_mask] = ~mask
+        if np.any(missing_mask):
+            if assign_missing_to_left:
+                final_left_mask[missing_mask] = True
+            else:
+                final_right_mask[missing_mask] = True
+
+        X_left = X[final_left_mask]
+        grad_left = grad[final_left_mask]
+        hess_left = hess[final_left_mask]
+
+        X_right = X[final_right_mask]
+        grad_right = grad[final_right_mask]
+        hess_right = hess[final_right_mask]
+
         return X_left, grad_left, hess_left, X_right, grad_right, hess_right
