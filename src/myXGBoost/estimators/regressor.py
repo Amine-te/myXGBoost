@@ -122,9 +122,24 @@ class XGBRegressor(BaseEstimator, RegressorMixin, BoosterBase):
         if verbose is None:
             verbose = self.verbose
         
-        # TODO: Initialize and train the booster
-        # self.booster_ = GradientBooster(...)
-        # self.booster_.fit(X, y, sample_weight, eval_set, eval_metric, verbose)
+        # Initialize and train the booster
+        from myXGBoost.booster.gradient_booster import GradientBooster
+        from myXGBoost.loss.regression import MSELoss
+        
+        self.booster_ = GradientBooster(
+            loss_function=MSELoss(),
+            n_estimators=self.n_estimators,
+            learning_rate=self.learning_rate,
+            max_depth=self.max_depth,
+            min_child_weight=self.min_child_weight,
+            gamma=self.gamma,
+            reg_lambda=1.0,  # Can be made a parameter later
+            subsample=self.subsample,
+            colsample_bytree=self.colsample_bytree,
+            random_state=self.random_state
+        )
+        
+        self.booster_.fit(X, y, sample_weight, eval_set, eval_metric, None, verbose)
         
         return self
     
@@ -155,11 +170,8 @@ class XGBRegressor(BaseEstimator, RegressorMixin, BoosterBase):
                 f"{self.n_features_in_} features as input."
             )
         
-        # TODO: Use booster to predict
-        # return self.booster_.predict(X)
-        
-        # Placeholder: return zeros for now
-        return np.zeros(X.shape[0])
+        # Use booster to predict
+        return self.booster_.predict(X)
     
     def predict_proba(self, X):
         """

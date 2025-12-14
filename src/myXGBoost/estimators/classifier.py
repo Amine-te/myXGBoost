@@ -130,9 +130,24 @@ class XGBClassifier(BaseEstimator, ClassifierMixin, BoosterBase):
         if verbose is None:
             verbose = self.verbose
         
-        # TODO: Initialize and train the booster
-        # self.booster_ = GradientBooster(...)
-        # self.booster_.fit(X, y_encoded, sample_weight, eval_set, eval_metric, verbose)
+        # Initialize and train the booster
+        from myXGBoost.booster.gradient_booster import GradientBooster
+        from myXGBoost.loss.classification import LogisticLoss
+        
+        self.booster_ = GradientBooster(
+            loss_function=LogisticLoss(),
+            n_estimators=self.n_estimators,
+            learning_rate=self.learning_rate,
+            max_depth=self.max_depth,
+            min_child_weight=self.min_child_weight,
+            gamma=self.gamma,
+            reg_lambda=1.0,  # Can be made a parameter later
+            subsample=self.subsample,
+            colsample_bytree=self.colsample_bytree,
+            random_state=self.random_state
+        )
+        
+        self.booster_.fit(X, y_encoded, sample_weight, eval_set, eval_metric, None, verbose)
         
         return self
     
@@ -163,12 +178,9 @@ class XGBClassifier(BaseEstimator, ClassifierMixin, BoosterBase):
                 f"{self.n_features_in_} features as input."
             )
         
-        # TODO: Use booster to predict probabilities, then get class labels
-        # proba = self.booster_.predict_proba(X)
-        # return self.classes_[np.argmax(proba, axis=1)]
-        
-        # Placeholder: return first class for now
-        return np.full(X.shape[0], self.classes_[0])
+        # Use booster to predict probabilities, then get class labels
+        proba = self.booster_.predict_proba(X)
+        return self.classes_[np.argmax(proba, axis=1)]
     
     def predict_proba(self, X):
         """
@@ -197,9 +209,5 @@ class XGBClassifier(BaseEstimator, ClassifierMixin, BoosterBase):
                 f"{self.n_features_in_} features as input."
             )
         
-        # TODO: Use booster to predict probabilities
-        # return self.booster_.predict_proba(X)
-        
-        # Placeholder: return uniform probabilities for now
-        n_samples = X.shape[0]
-        return np.ones((n_samples, self.n_classes_)) / self.n_classes_
+        # Use booster to predict probabilities
+        return self.booster_.predict_proba(X)

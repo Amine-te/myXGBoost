@@ -1,4 +1,7 @@
 """Gradient boosting implementation."""
 
-__all__ = ["GradientBooster"]
+from myXGBoost.booster.gradient_booster import GradientBooster, BoosterBase
+
+__all__ = ["GradientBooster", "BoosterBase"]
+
 
