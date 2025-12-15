@@ -56,6 +56,7 @@ class XGBRegressor(BaseEstimator, RegressorMixin, BoosterBase):
         max_depth=6,
         min_child_weight=1.0,
         gamma=0.0,
+        reg_lambda=1.0,
         subsample=1.0,
         colsample_bytree=1.0,
         random_state=None,
@@ -66,6 +67,7 @@ class XGBRegressor(BaseEstimator, RegressorMixin, BoosterBase):
         self.max_depth = max_depth
         self.min_child_weight = min_child_weight
         self.gamma = gamma
+        self.reg_lambda = reg_lambda
         self.subsample = subsample
         self.colsample_bytree = colsample_bytree
         self.random_state = random_state
@@ -133,7 +135,7 @@ class XGBRegressor(BaseEstimator, RegressorMixin, BoosterBase):
             max_depth=self.max_depth,
             min_child_weight=self.min_child_weight,
             gamma=self.gamma,
-            reg_lambda=1.0,  # Can be made a parameter later
+            reg_lambda=self.reg_lambda,
             subsample=self.subsample,
             colsample_bytree=self.colsample_bytree,
             random_state=self.random_state

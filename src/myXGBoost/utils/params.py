@@ -9,6 +9,7 @@ def validate_booster_params(
     max_depth=None,
     min_child_weight=None,
     gamma=None,
+    reg_lambda=None,
     subsample=None,
     colsample_bytree=None,
 ):
@@ -65,6 +66,12 @@ def validate_booster_params(
         if not isinstance(gamma, (int, float)) or gamma < 0:
             raise ValueError(
                 f"gamma must be >= 0, got {gamma!r}."
+            )
+
+    if reg_lambda is not None:
+        if not isinstance(reg_lambda, (int, float)) or reg_lambda < 0:
+            raise ValueError(
+                f"reg_lambda must be >= 0, got {reg_lambda!r}."
             )
     
     if subsample is not None:
