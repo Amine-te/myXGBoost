@@ -43,6 +43,7 @@ class TreeNode:
         # Split information (for internal nodes)
         self.split_feature = None
         self.split_threshold = None
+        self.gain = 0.0  # Gain achieved by the split
         
         # Children (for internal nodes)
         self.left_child = None
@@ -65,7 +66,7 @@ class TreeNode:
         self.grad_sum += grad
         self.hess_sum += hess
     
-    def set_split(self, feature: int, threshold: float):
+    def set_split(self, feature: int, threshold: float, gain: float = 0.0):
         """
         Set split information and mark as internal node.
         
@@ -75,9 +76,12 @@ class TreeNode:
             Feature index for splitting.
         threshold : float
             Threshold value for splitting.
+        gain : float, default=0.0
+            Gain achieved by the split.
         """
         self.split_feature = feature
         self.split_threshold = threshold
+        self.gain = gain
         self.is_leaf = False
     
     def set_children(self, left: 'TreeNode', right: 'TreeNode'):
