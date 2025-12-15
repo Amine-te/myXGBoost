@@ -68,7 +68,7 @@ The model learns to correct residuals (errors) from previous iterations:
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/myXGBoost.git
+git clone https://github.com/Amine-te/myXGBoost.git
 cd myXGBoost
 
 # Install in development mode
