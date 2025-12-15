@@ -106,6 +106,8 @@ class GradientBooster(BoosterBase):
     n_jobs_gradients : int, default=-1
         Number of parallel jobs for gradient computation. -1 means use all cores.
         Only used if use_parallel_gradients=True.
+    n_jobs : int, default=-1
+        Number of parallel jobs for tree building.
     """
     
     def __init__(
@@ -124,7 +126,8 @@ class GradientBooster(BoosterBase):
         exact_threshold: int = 10000,
         max_bins: int = 256,
         use_parallel_gradients: bool = False,
-        n_jobs_gradients: int = -1
+        n_jobs_gradients: int = -1,
+        n_jobs: int = -1
     ):
         self.loss_function = loss_function
         self.n_estimators = n_estimators
@@ -141,6 +144,7 @@ class GradientBooster(BoosterBase):
         self.max_bins = max_bins
         self.use_parallel_gradients = use_parallel_gradients
         self.n_jobs_gradients = n_jobs_gradients
+        self.n_jobs = n_jobs
         
         # Model state
         self.trees: List[DecisionTree] = []  # For binary/regression
@@ -350,7 +354,9 @@ class GradientBooster(BoosterBase):
         
         if is_multiclass:
             # Multiclass: train one tree per class IN PARALLEL
-            with Parallel(n_jobs=-1) as parallel:
+            # Use n_jobs for parallel tree building across classes
+            # If n_jobs is 1, it will run sequentially
+            with Parallel(n_jobs=self.n_jobs) as parallel:
                 for iteration in range(self.n_estimators):
                     # Compute gradients and hessians
                     if self.use_parallel_gradients:
@@ -376,7 +382,8 @@ class GradientBooster(BoosterBase):
                         'gamma': self.gamma,
                         'use_hybrid_split_finder': self.use_hybrid_split_finder,
                         'exact_threshold': self.exact_threshold,
-                        'max_bins': self.max_bins
+                        'max_bins': self.max_bins,
+                        'n_jobs': self.n_jobs  # Pass n_jobs to tree
                     }
                     
                     # Pre-sample indices for each class
@@ -507,7 +514,8 @@ class GradientBooster(BoosterBase):
                     gamma=self.gamma,
                     use_hybrid_split_finder=self.use_hybrid_split_finder,
                     exact_threshold=self.exact_threshold,
-                    max_bins=self.max_bins
+                    max_bins=self.max_bins,
+                    n_jobs=self.n_jobs  # Pass n_jobs
                 )
                 tree.fit(X_sampled, grad_sampled, hess_sampled, feature_indices)
                 
@@ -685,3 +693,39 @@ class GradientBooster(BoosterBase):
             proba_positive = sigmoid(y_pred_raw)
             proba_negative = 1 - proba_positive
             return np.column_stack([proba_negative, proba_positive])
+
+    @property
+    def feature_importances_(self) -> np.ndarray:
+        """
+        Return the feature importances (the higher, the more important the feature).
+        
+        Returns
+        -------
+        feature_importances_ : ndarray of shape (n_features,)
+            The feature importances.
+        """
+        if self.n_features_ is None:
+            raise ValueError("Booster not fitted yet")
+            
+        importance_map = {}
+        
+        # Handle binary/regression trees
+        for tree in self.trees:
+            tree.compute_feature_importances(importance_map)
+            
+        # Handle multiclass trees
+        for class_trees in self.trees_multiclass:
+            for tree in class_trees:
+                tree.compute_feature_importances(importance_map)
+                
+        importances = np.zeros(self.n_features_)
+        for idx, gain in importance_map.items():
+            if idx < self.n_features_:
+                importances[idx] = gain
+                
+        # Normalize to sum to 1
+        total_gain = np.sum(importances)
+        if total_gain > 0:
+            importances /= total_gain
+            
+        return importances

@@ -36,6 +36,8 @@ class DecisionTree:
     max_bins : int, default=256
         Maximum number of bins for histogram construction
         in approximate method. Used only if use_hybrid_split_finder=True.
+    n_jobs : int, default=-1
+        Number of parallel jobs to use for split finding.
     """
     
     def __init__(
@@ -46,7 +48,8 @@ class DecisionTree:
         gamma: float = 0.0,
         use_hybrid_split_finder: bool = True,
         exact_threshold: int = 10000,
-        max_bins: int = 256
+        max_bins: int = 256,
+        n_jobs: int = -1
     ):
         self.max_depth = max_depth
         self.min_child_weight = min_child_weight
@@ -55,6 +58,7 @@ class DecisionTree:
         self.use_hybrid_split_finder = use_hybrid_split_finder
         self.exact_threshold = exact_threshold
         self.max_bins = max_bins
+        self.n_jobs = n_jobs
         
         self.root = None
         
@@ -67,7 +71,7 @@ class DecisionTree:
                 min_child_weight=min_child_weight,
                 max_bins=max_bins,
                 use_parallelization=True,  # Enable parallelization
-                n_jobs=-1  # Use all cores
+                n_jobs=n_jobs  # Use configured n_jobs
             )
         else:
             self.split_finder = ExactSplitFinder(
@@ -198,7 +202,7 @@ class DecisionTree:
             return node
         
         # Set split information
-        node.set_split(best_feature, best_threshold)
+        node.set_split(best_feature, best_threshold, best_gain)
         
         # Recursively build children
         left_child = self._build_node(
@@ -308,3 +312,30 @@ class DecisionTree:
         if self.root is None:
             return 0
         return self.root.get_num_leaves()
+
+    def compute_feature_importances(self, importance_map: dict):
+        """
+        Recursively compute feature importances (gain) for this tree.
+        
+        Parameters
+        ----------
+        importance_map : dict
+            Dictionary mapping feature index to accumulated gain.
+        """
+        if self.root:
+            self._compute_node_importance(self.root, importance_map)
+            
+    def _compute_node_importance(self, node: TreeNode, importance_map: dict):
+        """Helper to traverse tree and accumulate gain."""
+        if node.is_leaf:
+            return
+            
+        if node.split_feature is not None:
+            if node.split_feature not in importance_map:
+                importance_map[node.split_feature] = 0.0
+            importance_map[node.split_feature] += node.gain
+            
+        if node.left_child:
+            self._compute_node_importance(node.left_child, importance_map)
+        if node.right_child:
+            self._compute_node_importance(node.right_child, importance_map)

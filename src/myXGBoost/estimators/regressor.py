@@ -27,6 +27,9 @@ class XGBRegressor(BaseEstimator, RegressorMixin, BoosterBase):
     gamma : float, default=0.0
         Minimum loss reduction required to make a further partition
         on a leaf node of the tree (regularization parameter).
+    reg_lambda : float, default=1.0
+        L2 regularization term on weights. Increasing this value will make
+        model more conservative.
     subsample : float, default=1.0
         Subsample ratio of the training instances. Setting it to 0.5
         means that XGBoost would randomly sample half of the training
@@ -61,6 +64,7 @@ class XGBRegressor(BaseEstimator, RegressorMixin, BoosterBase):
         colsample_bytree=1.0,
         random_state=None,
         verbose=False,
+        n_jobs=-1
     ):
         self.learning_rate = learning_rate
         self.n_estimators = n_estimators
@@ -72,7 +76,22 @@ class XGBRegressor(BaseEstimator, RegressorMixin, BoosterBase):
         self.colsample_bytree = colsample_bytree
         self.random_state = random_state
         self.verbose = verbose
+        self.n_jobs = n_jobs
     
+    @property
+    def feature_importances_(self):
+        """
+        Return the feature importances (the higher, the more important the feature).
+        
+        Returns
+        -------
+        feature_importances_ : ndarray of shape (n_features,)
+            The feature importances.
+        """
+        if not hasattr(self, "booster_"):
+             raise ValueError("Model has not been fitted yet.")
+        return self.booster_.feature_importances_
+
     def fit(self, X, y, sample_weight=None, eval_set=None, eval_metric=None, verbose=None):
         """
         Fit the gradient boosting regressor.
@@ -138,7 +157,8 @@ class XGBRegressor(BaseEstimator, RegressorMixin, BoosterBase):
             reg_lambda=self.reg_lambda,
             subsample=self.subsample,
             colsample_bytree=self.colsample_bytree,
-            random_state=self.random_state
+            random_state=self.random_state,
+            n_jobs=self.n_jobs
         )
         
         self.booster_.fit(X, y, sample_weight, eval_set, eval_metric, None, verbose)
@@ -196,3 +216,17 @@ class XGBRegressor(BaseEstimator, RegressorMixin, BoosterBase):
             "predict_proba is not available for regression. "
             "Use predict() instead."
         )
+
+    @property
+    def feature_importances_(self):
+        """
+        Return the feature importances (the higher, the more important the feature).
+        
+        Returns
+        -------
+        feature_importances_ : ndarray of shape (n_features,)
+            The feature importances.
+        """
+        if not hasattr(self, 'booster_'):
+            raise AttributeError("This XGBRegressor instance is not fitted yet.")
+        return self.booster_.feature_importances_
