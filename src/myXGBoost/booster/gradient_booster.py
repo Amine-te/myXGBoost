@@ -46,6 +46,7 @@ def _train_single_tree(
     preds : ndarray
         Predictions on the full dataset X.
     """
+    # Ensure Fortran-contiguous layout for efficient column access during tree building
     X_sampled = np.asfortranarray(X[row_indices])
     grad_sampled = grad[row_indices]
     hess_sampled = hess[row_indices]
@@ -490,6 +491,7 @@ class GradientBooster(BoosterBase):
                 # Binary or regression: single tree per iteration
                 # Row subsampling
                 row_indices = self._sample_rows(n_samples)
+                # Ensure Fortran-contiguous layout for efficient column access during tree building
                 X_sampled = np.asfortranarray(X[row_indices])
                 grad_sampled = grad[row_indices]
                 hess_sampled = hess[row_indices]
