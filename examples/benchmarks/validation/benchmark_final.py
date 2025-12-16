@@ -30,6 +30,11 @@ PARAMS = {
 
 results_data = []
 
+# Create results directory
+script_dir = os.path.dirname(os.path.abspath(__file__))
+results_dir = os.path.join(os.path.dirname(script_dir), 'validation_results')
+os.makedirs(results_dir, exist_ok=True)
+
 def run_classification_test():
     print("\n--- 1. Classification Test (Breast Cancer) ---")
     X, y = load_breast_cancer(return_X_y=True)
@@ -182,8 +187,11 @@ def generate_dashboard(cls_scores, reg_scores, stress_times):
     plot_subplot(axes[2], stress_times, 'Training Time - Stress Test\n(Lower is better)', 'Seconds', is_time=True)
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.92])
-    plt.savefig('benchmark_dashboard.png', dpi=300)
-    print("Dashboard saved as 'benchmark_dashboard.png'")
+    
+    # Save to validation_results directory
+    output_path = os.path.join(results_dir, 'benchmark_dashboard.png')
+    plt.savefig(output_path, dpi=300)
+    print(f"Dashboard saved as '{output_path}'")
 
 if __name__ == "__main__":
     # Run tests

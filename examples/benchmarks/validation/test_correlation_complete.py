@@ -25,6 +25,11 @@ COMMON_PARAMS = {
     'reg_lambda': 1.0,
 }
 
+# Create results directory
+script_dir = os.path.dirname(os.path.abspath(__file__))
+results_dir = os.path.join(os.path.dirname(script_dir), 'validation_results')
+os.makedirs(results_dir, exist_ok=True)
+
 def run_regression_comparison():
     print("\n--- 1. Regression Comparison (California Housing) ---")
     data = fetch_california_housing()
@@ -100,9 +105,11 @@ def plot_results(reg_data, cls_data):
     plot_scatter(axes[1], cls_data[0], cls_data[1], "Classification: Probabilities (Class 1)")
     
     plt.tight_layout()
-    output_file = 'correlation_complete.png'
-    plt.savefig(output_file, dpi=300)
-    print(f"Image saved: {output_file}")
+    
+    # Save to validation_results directory
+    output_path = os.path.join(results_dir, 'correlation_complete.png')
+    plt.savefig(output_path, dpi=300)
+    print(f"Image saved: {output_path}")
 
 if __name__ == "__main__":
     # Exécution des tests

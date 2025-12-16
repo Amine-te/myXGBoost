@@ -27,6 +27,11 @@ COMMON_PARAMS = {
     'n_jobs': 1  # Force single thread to avoid conflicts/deadlocks
 }
 
+# Create results directory
+script_dir = os.path.dirname(os.path.abspath(__file__))
+results_dir = os.path.join(os.path.dirname(script_dir), 'validation_results')
+os.makedirs(results_dir, exist_ok=True)
+
 def plot_importance_comparison(feature_names, my_imp, off_imp, title, filename):
     x = np.arange(len(feature_names))
     width = 0.35
@@ -43,8 +48,11 @@ def plot_importance_comparison(feature_names, my_imp, off_imp, title, filename):
     ax.legend()
 
     fig.tight_layout()
-    plt.savefig(filename)
-    print(f"Graph saved to {filename}")
+    
+    # Save to validation_results directory
+    output_path = os.path.join(results_dir, filename)
+    plt.savefig(output_path)
+    print(f"Graph saved to {output_path}")
     plt.close()
 
 def run_regression_comparison():
