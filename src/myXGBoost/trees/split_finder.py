@@ -232,67 +232,68 @@ class ExactSplitFinder:
         best_gain : float
             Gain of the best split. -inf if no valid split found.
         """
-        # Get unique sorted values
         # Ignore missing values when searching for splits
         mask = ~np.isnan(feature_values)
         if not np.any(mask):
             return None, float('-inf')
 
+        # Work only on non-missing subset
         feat = feature_values[mask]
         grad_masked = grad[mask]
         hess_masked = hess[mask]
 
+        # If all values are identical, no valid split
         unique_values = np.unique(feat)
         if len(unique_values) < 2:
             return None, float('-inf')
         
-        # Try splits between consecutive unique values
-        best_threshold = None
-        best_gain = float('-inf')
-        
-        # Sort indices by feature values
-        # Sort non-missing values
+        # Sort once and avoid creating multiple large intermediate arrays
         sorted_indices = np.argsort(feat)
         sorted_values = feat[sorted_indices]
-        sorted_grad = grad_masked[sorted_indices]
-        sorted_hess = hess_masked[sorted_indices]
-        
-        # Initialize left and right statistics
-        grad_left = 0.0
-        hess_left = 0.0
-        grad_right = np.sum(sorted_grad)
-        hess_right = np.sum(sorted_hess)
-        
-        # Try each possible split point
+
+        # Cumulative sums using indexed gradients/hessians (no extra sorted_* arrays)
+        grad_sorted = grad_masked[sorted_indices]
+        hess_sorted = hess_masked[sorted_indices]
+
+        grad_cumsum = np.cumsum(grad_sorted)
+        hess_cumsum = np.cumsum(hess_sorted)
+
+        grad_total = grad_cumsum[-1]
+        hess_total = hess_cumsum[-1]
+
+        best_threshold = None
+        best_gain = float('-inf')
+
+        # Try each possible split point between distinct consecutive values
         for i in range(len(sorted_values) - 1):
-            # Skip if values are the same
             if sorted_values[i] == sorted_values[i + 1]:
                 continue
-            
-            # Move sample from right to left
-            grad_left += sorted_grad[i]
-            hess_left += sorted_hess[i]
-            grad_right -= sorted_grad[i]
-            hess_right -= sorted_hess[i]
-            
+
+            grad_left = grad_cumsum[i]
+            hess_left = hess_cumsum[i]
+            grad_right = grad_total - grad_left
+            hess_right = hess_total - hess_left
+
             # Check minimum child weight constraint
             if hess_left < self.min_child_weight or hess_right < self.min_child_weight:
                 continue
-            
-            # Calculate threshold (midpoint between consecutive values)
+
+            # Threshold is midpoint between consecutive values
             threshold = (sorted_values[i] + sorted_values[i + 1]) / 2.0
-            
-            # Calculate gain
+
             gain = calculate_gain(
-                grad_left, hess_left,
-                grad_right, hess_right,
-                self.reg_lambda, self.gamma
+                grad_left,
+                hess_left,
+                grad_right,
+                hess_right,
+                self.reg_lambda,
+                self.gamma,
             )
-            
+
             if gain > best_gain:
                 best_gain = gain
                 best_threshold = threshold
-        
+
         return best_threshold, best_gain
     
     def _find_best_split_for_feature_vectorized(
