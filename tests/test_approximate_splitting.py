@@ -202,7 +202,7 @@ class TestApproximateSplitFinder:
         grad = np.random.randn(100)
         hess = np.abs(np.random.randn(100)) + 0.5
         
-        X_left, grad_left, hess_left, X_right, grad_right, hess_right = \
+        X_left, grad_left, hess_left, X_right, grad_right, hess_right, assign_missing_to_left = \
             finder.split_data(X, grad, hess, feature=0, threshold=0.0)
         
         # Check split
@@ -284,7 +284,7 @@ class TestHybridSplitFinder:
         grad = np.random.randn(200)
         hess = np.abs(np.random.randn(200)) + 0.5
         
-        X_left, grad_left, hess_left, X_right, grad_right, hess_right = \
+        X_left, grad_left, hess_left, X_right, grad_right, hess_right, assign_missing_to_left = \
             finder.split_data(X, grad, hess, feature=0, threshold=0.0)
         
         # Check split

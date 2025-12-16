@@ -248,7 +248,7 @@ class TestExactSplitFinder:
         grad = np.array([1.0, 2.0, 3.0, 4.0])
         hess = np.array([1.0, 1.0, 1.0, 1.0])
         
-        X_left, grad_left, hess_left, X_right, grad_right, hess_right = \
+        X_left, grad_left, hess_left, X_right, grad_right, hess_right, assign_missing_to_left = \
             split_finder.split_data(X, grad, hess, feature=0, threshold=2.5)
         
         # Left: values < 2.5

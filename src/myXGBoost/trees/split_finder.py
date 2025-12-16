@@ -438,7 +438,7 @@ class ExactSplitFinder:
         hess: np.ndarray,
         feature: int,
         threshold: float
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, bool]:
         """
         Split data based on feature and threshold.
         
@@ -458,9 +458,12 @@ class ExactSplitFinder:
         Returns
         -------
         X_left, grad_left, hess_left : ndarray
-            Data for left child (feature < threshold).
+            Data for left child (feature < threshold, plus any assigned missing).
         X_right, grad_right, hess_right : ndarray
-            Data for right child (feature >= threshold).
+            Data for right child (feature >= threshold, plus remaining missing).
+        assign_missing_to_left : bool
+            True if NaNs are routed to the left child for this split, False if they
+            are routed to the right child.
         """
         # Handle missing values (NaN) in the feature by assigning them to
         # the side (left/right) that yields the higher gain.
@@ -519,8 +522,16 @@ class ExactSplitFinder:
         X_right = X[final_right_mask]
         grad_right = grad[final_right_mask]
         hess_right = hess[final_right_mask]
-
-        return X_left, grad_left, hess_left, X_right, grad_right, hess_right
+        
+        return (
+            X_left,
+            grad_left,
+            hess_left,
+            X_right,
+            grad_right,
+            hess_right,
+            bool(assign_missing_to_left),
+        )
 
 
 class WeightedQuantileSketch:
@@ -944,7 +955,7 @@ class ApproximateSplitFinder:
         hess: np.ndarray,
         feature: int,
         threshold: float
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, bool]:
         """
         Split data based on feature and threshold.
         
@@ -967,6 +978,9 @@ class ApproximateSplitFinder:
             Data for left child.
         X_right, grad_right, hess_right : ndarray
             Data for right child.
+        assign_missing_to_left : bool
+            True if NaNs are routed to the left child for this split, False if they
+            are routed to the right child.
         """
         # Handle missing values (NaN) in the feature by assigning them to
         # the side (left/right) that yields the higher gain.
@@ -1025,8 +1039,16 @@ class ApproximateSplitFinder:
         X_right = X[final_right_mask]
         grad_right = grad[final_right_mask]
         hess_right = hess[final_right_mask]
-
-        return X_left, grad_left, hess_left, X_right, grad_right, hess_right
+        
+        return (
+            X_left,
+            grad_left,
+            hess_left,
+            X_right,
+            grad_right,
+            hess_right,
+            bool(assign_missing_to_left),
+        )
 
 
 class HybridSplitFinder:
@@ -1151,7 +1173,7 @@ class HybridSplitFinder:
         hess: np.ndarray,
         feature: int,
         threshold: float
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, bool]:
         """
         Split data based on feature and threshold.
         
@@ -1174,6 +1196,9 @@ class HybridSplitFinder:
             Data for left child.
         X_right, grad_right, hess_right : ndarray
             Data for right child.
+        assign_missing_to_left : bool
+            True if NaNs are routed to the left child for this split, False if they
+            are routed to the right child.
         """
         # Make split_data sparsity-aware (handle NaNs)
         feature_col = X[:, feature]
@@ -1226,6 +1251,14 @@ class HybridSplitFinder:
         X_right = X[final_right_mask]
         grad_right = grad[final_right_mask]
         hess_right = hess[final_right_mask]
-
-        return X_left, grad_left, hess_left, X_right, grad_right, hess_right
+        
+        return (
+            X_left,
+            grad_left,
+            hess_left,
+            X_right,
+            grad_right,
+            hess_right,
+            bool(assign_missing_to_left),
+        )
         

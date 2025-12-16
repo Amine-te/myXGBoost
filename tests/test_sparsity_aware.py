@@ -25,7 +25,8 @@ def test_split_assigns_missing_to_best_side_exact():
     feat, thr, gain = finder.find_best_split(X, grad, hess)
     assert feat == 0
 
-    X_left, grad_left, hess_left, X_right, grad_right, hess_right = finder.split_data(X, grad, hess, feat, thr)
+    X_left, grad_left, hess_left, X_right, grad_right, hess_right, assign_missing_to_left = \
+        finder.split_data(X, grad, hess, feat, thr)
 
     # Missing should be assigned left because its positive gradient helps left gain
     # Check that missing value ended in left
@@ -52,6 +53,7 @@ def test_split_assigns_missing_to_best_side_approx():
 
     finder = ApproximateSplitFinder(max_bins=3, use_parallelization=False)
     feat, thr, gain = finder.find_best_split(X, grad, hess)
-    X_left, grad_left, hess_left, X_right, grad_right, hess_right = finder.split_data(X, grad, hess, feat, thr)
+    X_left, grad_left, hess_left, X_right, grad_right, hess_right, assign_missing_to_left = \
+        finder.split_data(X, grad, hess, feat, thr)
 
     assert np.isnan(X_left).any() or np.isnan(X_right).any()

@@ -44,6 +44,9 @@ class TreeNode:
         self.split_feature = None
         self.split_threshold = None
         self.gain = 0.0  # Gain achieved by the split
+        # Whether NaN (missing) values should go to the left child at this split.
+        # If None, missing values default to the right child at prediction time.
+        self.missing_go_to_left: Optional[bool] = None
         
         # Children (for internal nodes)
         self.left_child = None
@@ -66,7 +69,13 @@ class TreeNode:
         self.grad_sum += grad
         self.hess_sum += hess
     
-    def set_split(self, feature: int, threshold: float, gain: float = 0.0):
+    def set_split(
+        self,
+        feature: int,
+        threshold: float,
+        gain: float = 0.0,
+        missing_go_to_left: Optional[bool] = None,
+    ):
         """
         Set split information and mark as internal node.
         
@@ -82,6 +91,7 @@ class TreeNode:
         self.split_feature = feature
         self.split_threshold = threshold
         self.gain = gain
+        self.missing_go_to_left = missing_go_to_left
         self.is_leaf = False
     
     def set_children(self, left: 'TreeNode', right: 'TreeNode'):
@@ -129,10 +139,18 @@ class TreeNode:
             return self.leaf_value if self.leaf_value is not None else 0.0
         
         # Navigate to appropriate child
-        if x[self.split_feature] < self.split_threshold:
+        value = x[self.split_feature]
+        if np.isnan(value):
+            # Route missing values according to learned default direction.
+            go_left = True if self.missing_go_to_left is None else self.missing_go_to_left
+            next_node = self.left_child if go_left else self.right_child
+            if next_node is None:
+                # Fallback to current node's leaf value if children are missing
+                return self.leaf_value if self.leaf_value is not None else 0.0
+            return next_node.predict(x)
+        if value < self.split_threshold:
             return self.left_child.predict(x)
-        else:
-            return self.right_child.predict(x)
+        return self.right_child.predict(x)
     
     def get_depth(self) -> int:
         """

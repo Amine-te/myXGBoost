@@ -181,7 +181,7 @@ class DecisionTree:
             node.set_leaf_value(0.0)
             return node
         
-        # Find best split
+        # Find best split (threshold chosen ignoring missing values)
         best_feature, best_threshold, best_gain = self.split_finder.find_best_split(
             X, grad, hess, feature_indices
         )
@@ -195,9 +195,16 @@ class DecisionTree:
             node.set_leaf_value(weight)
             return node
         
-        # Split the data
-        X_left, grad_left, hess_left, X_right, grad_right, hess_right = \
-            self.split_finder.split_data(X, grad, hess, best_feature, best_threshold)
+        # Split the data and determine best direction for missing values
+        (
+            X_left,
+            grad_left,
+            hess_left,
+            X_right,
+            grad_right,
+            hess_right,
+            assign_missing_to_left,
+        ) = self.split_finder.split_data(X, grad, hess, best_feature, best_threshold)
         
         # Check minimum child weight
         if (np.sum(hess_left) < self.min_child_weight or
@@ -209,8 +216,13 @@ class DecisionTree:
             node.set_leaf_value(weight)
             return node
         
-        # Set split information
-        node.set_split(best_feature, best_threshold, best_gain)
+        # Set split information, including learned missing-value direction
+        node.set_split(
+            best_feature,
+            best_threshold,
+            best_gain,
+            missing_go_to_left=assign_missing_to_left,
+        )
         
         # Recursively build children
         left_child = self._build_node(
@@ -280,14 +292,21 @@ class DecisionTree:
             return
         
         # Get feature values for relevant samples
-        # Use slicing for speed if convenient, but array indexing is needed here
         values = X[indices, node.split_feature]
         
-        # Determine split
+        # Base split: non-missing values go left if < threshold
         left_mask = values < node.split_threshold
         
+        # Handle missing values (NaNs) according to learned default direction
+        missing_mask = np.isnan(values)
+        if np.any(missing_mask):
+            go_left = True if node.missing_go_to_left is None else node.missing_go_to_left
+            if go_left:
+                left_mask[missing_mask] = True
+            else:
+                left_mask[missing_mask] = False
+        
         # Recurse left
-        # node indices corresponding to left mask
         left_indices = indices[left_mask]
         self._predict_vectorized(node.left_child, X, left_indices, predictions)
         
