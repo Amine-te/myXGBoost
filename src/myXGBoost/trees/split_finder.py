@@ -4,6 +4,7 @@ import numpy as np
 from typing import Tuple, Optional, Union
 from multiprocessing import Pool, cpu_count
 import warnings
+from joblib import Parallel, delayed
 from myXGBoost.utils.parallel import build_histogram_parallel
 
 
@@ -130,6 +131,10 @@ class ExactSplitFinder:
         Minimum sum of hessians required in a child node.
     use_vectorization : bool, default=True
         Whether to use vectorized operations (much faster for large datasets).
+    use_parallelization : bool, default=False
+        Whether to evaluate features in parallel.
+    n_jobs : int, default=-1
+        Number of parallel jobs for feature evaluation. -1 means use all cores.
     """
     
     def __init__(
@@ -137,12 +142,20 @@ class ExactSplitFinder:
         reg_lambda: float = 1.0,
         gamma: float = 0.0,
         min_child_weight: float = 1.0,
-        use_vectorization: bool = True
+        use_vectorization: bool = True,
+        use_parallelization: bool = False,
+        n_jobs: int = -1,
     ):
         self.reg_lambda = reg_lambda
         self.gamma = gamma
         self.min_child_weight = min_child_weight
         self.use_vectorization = use_vectorization
+        self.use_parallelization = use_parallelization
+
+        if n_jobs == -1:
+            self.n_jobs = cpu_count()
+        else:
+            self.n_jobs = max(1, min(n_jobs, cpu_count()))
     
     def find_best_split(
         self,
@@ -179,28 +192,56 @@ class ExactSplitFinder:
         if feature_indices is None:
             feature_indices = np.arange(n_features)
         
-        best_feature = None
-        best_threshold = None
-        best_gain = float('-inf')
-        
-        # Try each feature
-        for feature_idx in feature_indices:
-            feature_values = X[:, feature_idx]
+        # Sequential path (default / few features)
+        if (not self.use_parallelization) or len(feature_indices) <= 1:
+            best_feature = None
+            best_threshold = None
+            best_gain = float('-inf')
             
-            # Find best split for this feature
-            if self.use_vectorization:
-                threshold, gain = self._find_best_split_for_feature_vectorized(
+            # Try each feature
+            for feature_idx in feature_indices:
+                feature_values = X[:, feature_idx]
+                
+                # Find best split for this feature
+                if self.use_vectorization:
+                    threshold, gain = self._find_best_split_for_feature_vectorized(
+                        feature_values, grad, hess
+                    )
+                else:
+                    threshold, gain = self._find_best_split_for_feature(
+                        feature_values, grad, hess
+                    )
+                
+                if gain > best_gain:
+                    best_gain = gain
+                    best_feature = feature_idx
+                    best_threshold = threshold
+        else:
+            # Parallel evaluation across features using threads (avoids pickling issues)
+            def _evaluate(feature_idx: int):
+                feature_values = X[:, feature_idx]
+                if self.use_vectorization:
+                    return self._find_best_split_for_feature_vectorized(
+                        feature_values, grad, hess
+                    )
+                return self._find_best_split_for_feature(
                     feature_values, grad, hess
                 )
-            else:
-                threshold, gain = self._find_best_split_for_feature(
-                    feature_values, grad, hess
-                )
-            
-            if gain > best_gain:
-                best_gain = gain
-                best_feature = feature_idx
-                best_threshold = threshold
+
+            results = Parallel(
+                n_jobs=self.n_jobs,
+                backend="threading",
+            )(delayed(_evaluate)(f_idx) for f_idx in feature_indices)
+
+            best_feature = None
+            best_threshold = None
+            best_gain = float('-inf')
+
+            for feature_idx, (threshold, gain) in zip(feature_indices, results):
+                if gain > best_gain:
+                    best_gain = gain
+                    best_feature = feature_idx
+                    best_threshold = threshold
         
         if best_gain == float('-inf'):
             return None, None, best_gain
