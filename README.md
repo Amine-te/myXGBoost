@@ -106,3 +106,6 @@ The codebase is organized to separate core logic from examples and tests:
 - `src/myXGBoost/estimators/`: Scikit-learn compatible wrapper classes.
 - `examples/benchmarks/`: Validation scripts and performance tests.
 - `tests/`: Unit tests covering robustness, serialization, and logic.
+
+## Presentation
+https://docs.google.com/presentation/d/1ni_zggvNlOWF5LK8n70kaI92uP1uFQ9bfEPVZN_lVEA/edit?usp=sharing
