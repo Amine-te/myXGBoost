@@ -61,6 +61,10 @@ class DecisionTree:
         self.n_jobs = n_jobs
         
         self.root = None
+
+        # Cached feature importance statistics
+        self._cached_feature_importance = None
+        self._importance_cache_valid = False
         
         # Initialize split finder based on configuration
         if use_hybrid_split_finder:
@@ -118,6 +122,10 @@ class DecisionTree:
                 "X, grad, and hess must have the same number of samples."
             )
         
+        # Invalidate any cached statistics before rebuilding
+        self._importance_cache_valid = False
+        self._cached_feature_importance = None
+
         # Build tree recursively
         self.root = self._build_node(
             X, grad, hess, feature_indices, depth=0
@@ -313,29 +321,63 @@ class DecisionTree:
             return 0
         return self.root.get_num_leaves()
 
-    def compute_feature_importances(self, importance_map: dict):
+    def compute_feature_importances(self, importance_map: Optional[dict] = None) -> dict:
         """
-        Recursively compute feature importances (gain) for this tree.
-        
+        Compute feature importances (gain) for this tree, with caching.
+
         Parameters
         ----------
-        importance_map : dict
-            Dictionary mapping feature index to accumulated gain.
+        importance_map : dict, optional
+            If provided, the per-tree importances will be accumulated into
+            this mapping. If None, a new dict containing only this tree's
+            importances is returned.
+
+        Returns
+        -------
+        dict
+            Mapping feature index -> accumulated gain.
         """
-        if self.root:
-            self._compute_node_importance(self.root, importance_map)
-            
-    def _compute_node_importance(self, node: TreeNode, importance_map: dict):
-        """Helper to traverse tree and accumulate gain."""
-        if node.is_leaf:
-            return
-            
-        if node.split_feature is not None:
-            if node.split_feature not in importance_map:
-                importance_map[node.split_feature] = 0.0
-            importance_map[node.split_feature] += node.gain
-            
-        if node.left_child:
-            self._compute_node_importance(node.left_child, importance_map)
-        if node.right_child:
-            self._compute_node_importance(node.right_child, importance_map)
+        # Fast path: reuse cached per-tree importance if available
+        if self._importance_cache_valid and self._cached_feature_importance is not None:
+            if importance_map is None:
+                # Return a copy to avoid external mutation of the cache
+                return dict(self._cached_feature_importance)
+
+            # Accumulate cached values into the provided map
+            for f_idx, gain in self._cached_feature_importance.items():
+                importance_map[f_idx] = importance_map.get(f_idx, 0.0) + gain
+            return importance_map
+
+        # No valid cache yet: compute iteratively using an explicit stack
+        local_map: dict = {} if importance_map is None else importance_map
+
+        if self.root is not None:
+            stack = [self.root]
+            while stack:
+                node = stack.pop()
+                if node is None or node.is_leaf:
+                    continue
+
+                if node.split_feature is not None:
+                    local_map[node.split_feature] = local_map.get(node.split_feature, 0.0) + node.gain
+
+                # Push children for single-pass traversal
+                if node.left_child is not None:
+                    stack.append(node.left_child)
+                if node.right_child is not None:
+                    stack.append(node.right_child)
+
+        # Update cache with per-tree importances (independent of external map)
+        self._cached_feature_importance = dict(local_map)
+        self._importance_cache_valid = True
+
+        return local_map
+
+    def invalidate_cache(self):
+        """
+        Invalidate cached feature importance statistics.
+
+        Should be called after any structural modification to the tree.
+        """
+        self._importance_cache_valid = False
+        self._cached_feature_importance = None
