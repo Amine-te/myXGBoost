@@ -622,24 +622,27 @@ class GradientBooster(BoosterBase):
         n_samples = X.shape[0]
         
         if self.n_classes_ is not None and self.n_classes_ > 2:
-            # Multiclass prediction
+            # Multiclass: vectorized accumulation across trees for each class
             y_pred = np.tile(self.initial_predictions_multiclass, (n_samples, 1))
-            
-            # Add contributions from all trees for each class
             n_trees = len(self.trees_multiclass[0]) if self.best_iteration_ is None else self.best_iteration_ + 1
-            for class_idx in range(self.n_classes_):
-                for i in range(n_trees):
-                    tree_pred = self.trees_multiclass[class_idx][i].predict(X)
-                    y_pred[:, class_idx] += self.learning_rate * tree_pred
-        else:
-            # Binary or regression prediction
-            y_pred = np.full(n_samples, self.initial_prediction, dtype=np.float64)
             
-            # Add contributions from all trees
+            for class_idx in range(self.n_classes_):
+                # Stack predictions from all trees, then sum along tree axis
+                tree_preds = np.column_stack([
+                    self.trees_multiclass[class_idx][i].predict(X)
+                    for i in range(n_trees)
+                ])  # Shape: (n_samples, n_trees)
+                y_pred[:, class_idx] += self.learning_rate * np.sum(tree_preds, axis=1)
+        else:
+            # Binary or regression: vectorized accumulation across trees
+            y_pred = np.full(n_samples, self.initial_prediction, dtype=np.float64)
             n_trees = len(self.trees) if self.best_iteration_ is None else self.best_iteration_ + 1
-            for i in range(n_trees):
-                tree_pred = self.trees[i].predict(X)
-                y_pred += self.learning_rate * tree_pred
+            
+            if n_trees > 0:
+                tree_preds = np.column_stack([
+                    self.trees[i].predict(X) for i in range(n_trees)
+                ])  # Shape: (n_samples, n_trees)
+                y_pred += self.learning_rate * np.sum(tree_preds, axis=1)
         
         return y_pred
     
