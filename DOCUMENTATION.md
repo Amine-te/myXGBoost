@@ -1114,8 +1114,10 @@ MIT License - See LICENSE file for details
 
 ### Authors
 
-- **Amine FARIS** - Initial implementation
-- Contributors welcome!
+- **Amine FARIS**
+- **Zouga Mouhcine**
+- **Serraji Wiame**
+- **El Madani Adam**
 
 ### Citation
 
@@ -1123,10 +1125,10 @@ If you use myXGBoost in academic work, please cite:
 
 ```bibtex
 @software{myxgboost2024,
-  author = {Faris, Amine},
+  authors = {Faris. Amine, Zouga. Mouhcine, Serraji. Wiame, El Madani. Adam },
   title = {myXGBoost: A Python Implementation of XGBoost},
-  year = {2024},
-  url = {https://github.com/yourusername/myXGBoost}
+  year = {2025},
+  url = {https://github.com/Amine-te/myXGBoost}
 }
 ```
 
