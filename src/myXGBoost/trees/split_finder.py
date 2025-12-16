@@ -683,6 +683,122 @@ class ApproximateSplitFinder:
         bins = sketch.get_bins(min(self.max_bins, len(np.unique(feature_values))))
         return bins
     
+    def _build_histogram(
+        self,
+        feature_values: np.ndarray,
+        grad: np.ndarray,
+        hess: np.ndarray
+    ) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+        """
+        Build gradient/hessian histogram statistics for a single feature.
+
+        Returns
+        -------
+        tuple (bins, g_hist, h_hist) or None if no valid split is possible.
+        """
+        # Filter missing values
+        mask_non_missing = ~np.isnan(feature_values)
+        if not np.any(mask_non_missing):
+            return None
+        
+        f = feature_values[mask_non_missing]
+        g = grad[mask_non_missing]
+        h = hess[mask_non_missing]
+        
+        unique_values = np.unique(f)
+        if len(unique_values) < 2:
+            # Constant feature: no valid split
+            return None
+        
+        # Determine candidate bins
+        if len(unique_values) <= self.max_bins:
+            bins = unique_values
+        else:
+            # Build bins using weighted quantile sketch
+            weights = np.abs(g) + 1e-10  # Use gradient magnitude as weight
+            bins = self._build_histograms(f, weights)
+        
+        if len(bins) < 2:
+            return None
+        
+        # Build histogram statistics for these bins
+        if self.use_parallel_histograms:
+            g_hist, h_hist = build_histogram_parallel(
+                f, g, h, bins, n_jobs=self.n_jobs_histograms
+            )
+        else:
+            # Map values to bin indices: O(N)
+            indices = np.digitize(f, bins)
+            minlength = len(bins) + 1
+            g_hist = np.bincount(indices, weights=g, minlength=minlength)
+            h_hist = np.bincount(indices, weights=h, minlength=minlength)
+        
+        return bins, g_hist, h_hist
+    
+    def _find_best_split_from_histogram(
+        self,
+        bins: np.ndarray,
+        g_hist: np.ndarray,
+        h_hist: np.ndarray
+    ) -> Tuple[Optional[float], float]:
+        """
+        Find best split threshold given precomputed histogram statistics.
+
+        Parameters
+        ----------
+        bins : ndarray
+            Histogram bin boundaries.
+        g_hist : ndarray
+            Gradient histogram.
+        h_hist : ndarray
+            Hessian histogram.
+        """
+        if len(bins) < 2:
+            return None, float('-inf')
+        
+        # Calculate cumulative stats for fast split evaluation: O(K)
+        # g_cum[i] = sum of gradients for all bins <= i
+        g_cum = np.cumsum(g_hist)
+        h_cum = np.cumsum(h_hist)
+        
+        g_total = g_cum[-1]
+        h_total = h_cum[-1]
+        
+        best_threshold = None
+        best_gain = float('-inf')
+        
+        # Evaluate splits at each bin boundary: O(K)
+        # Threshold bins[i] implies:
+        # Left node: x < bins[i]  (Indices 0..i)
+        # Right node: x >= bins[i] (Indices i+1..end)
+        for i in range(len(bins)):
+            threshold = bins[i]
+            
+            # Left stats
+            g_left = g_cum[i] if i < len(g_cum) else g_total
+            h_left = h_cum[i] if i < len(h_cum) else h_total
+            
+            # Right stats
+            g_right = g_total - g_left
+            h_right = h_total - h_left
+            
+            # Check constraints
+            if h_left < self.min_child_weight or h_right < self.min_child_weight:
+                continue
+            
+            # Calculate gain
+            gain = calculate_gain(
+                g_left, h_left,
+                g_right, h_right,
+                self.reg_lambda, self.gamma
+            )
+            
+            if gain > best_gain:
+                best_gain = gain
+                best_threshold = threshold
+        
+        return best_threshold, best_gain
+    
     def _evaluate_histogram_splits(
         self,
         feature_values: np.ndarray,
@@ -714,83 +830,14 @@ class ApproximateSplitFinder:
         if len(bins) < 2:
             return None, float('-inf')
         
-        # Filter missing values
-        mask_non_missing = ~np.isnan(feature_values)
-        if not np.any(mask_non_missing):
+        # Reuse shared histogram-building logic
+        hist = self._build_histogram(feature_values, grad, hess)
+        if hist is None:
             return None, float('-inf')
-            
-        f = feature_values[mask_non_missing]
-        g = grad[mask_non_missing]
-        h = hess[mask_non_missing]
         
-        # Build histogram stats: O(N)
-        # Use parallel histogram building if enabled
-        if self.use_parallel_histograms:
-            g_hist, h_hist = build_histogram_parallel(
-                f, g, h, bins, n_jobs=self.n_jobs_histograms
-            )
-        else:
-            # Sequential histogram building (backward compatible default)
-            # Map values to bin indices: O(N)
-            # np.digitize returns i such that bins[i-1] <= x < bins[i]
-            # Indices will be in range [0, len(bins)]
-            # We assume bins are sorted.
-            indices = np.digitize(f, bins)
-            
-            # Calculate histogram stats: O(N)
-            # Using bincount is much faster than looping
-            minlength = len(bins) + 1
-            g_hist = np.bincount(indices, weights=g, minlength=minlength)
-            h_hist = np.bincount(indices, weights=h, minlength=minlength)
-        
-        # Calculate cumulative stats for fast split evaluation: O(K)
-        # g_cum[i] = sum of gradients for all bins <= i
-        g_cum = np.cumsum(g_hist)
-        h_cum = np.cumsum(h_hist)
-        
-        g_total = g_cum[-1]
-        h_total = h_cum[-1]
-        
-        best_threshold = None
-        best_gain = float('-inf')
-        
-        # Evaluate splits at each bin boundary: O(K)
-        # Threshold bins[i] implies:
-        # Left node: x < bins[i]  (Indices 0..i)
-        # Right node: x >= bins[i] (Indices i+1..end)
-        # Note: digitize returns index i for x < bins[i]. So indices <= i go left?
-        # Check digitize spec:
-        # if right=False (default): bins[i-1] <= x < bins[i]. returns i.
-        # So x < bins[i] corresponds to indices 0, 1, ..., i.
-        # So cumulative sum up to i gives correct Left statistics for threshold bins[i].
-        
-        for i in range(len(bins)):
-            threshold = bins[i]
-            
-            # Left stats
-            g_left = g_cum[i] if i < len(g_cum) else g_total
-            h_left = h_cum[i] if i < len(h_cum) else h_total
-            
-            # Right stats
-            g_right = g_total - g_left
-            h_right = h_total - h_left
-            
-            # Check constraints
-            if h_left < self.min_child_weight or h_right < self.min_child_weight:
-                continue
-            
-            # Calculate gain
-            gain = calculate_gain(
-                g_left, h_left,
-                g_right, h_right,
-                self.reg_lambda, self.gamma
-            )
-            
-            if gain > best_gain:
-                best_gain = gain
-                best_threshold = threshold
-        
-        return best_threshold, best_gain
+        bins_hist, g_hist, h_hist = hist
+        # Use bins from histogram (should be identical to input bins for valid cases)
+        return self._find_best_split_from_histogram(bins_hist, g_hist, h_hist)
     
     def _find_best_split_for_feature(
         self,
@@ -800,38 +847,13 @@ class ApproximateSplitFinder:
     ) -> Tuple[Optional[float], float]:
         """
         Find best split for a single feature (approximate method).
-        
-        Parameters
-        ----------
-        feature_values : ndarray
-            Feature values.
-        grad : ndarray
-            Gradient values.
-        hess : ndarray
-            Hessian values.
-            
-        Returns
-        -------
-        best_threshold : float or None
-            Best threshold.
-        best_gain : float
-            Gain of best split.
         """
-        unique_values = np.unique(feature_values)
-        
-        if len(unique_values) < 2:
+        hist = self._build_histogram(feature_values, grad, hess)
+        if hist is None:
             return None, float('-inf')
         
-        # For small number of unique values, evaluate all
-        if len(unique_values) <= self.max_bins:
-            bins = unique_values
-        else:
-            # Build histograms using weighted quantile sketch
-            weights = np.abs(grad) + 1e-10  # Use gradient magnitude as weight
-            bins = self._build_histograms(feature_values, weights)
-        
-        # Evaluate splits at histogram boundaries
-        return self._evaluate_histogram_splits(feature_values, grad, hess, bins)
+        bins, g_hist, h_hist = hist
+        return self._find_best_split_from_histogram(bins, g_hist, h_hist)
     
     def find_best_split(
         self,
@@ -869,42 +891,46 @@ class ApproximateSplitFinder:
             feature_indices = np.arange(n_features)
         
         if not self.use_parallelization or len(feature_indices) <= 1:
-            # Sequential evaluation
+            # Sequential evaluation (build and use histograms per feature)
             best_feature = None
             best_threshold = None
             best_gain = float('-inf')
             
             for feature_idx in feature_indices:
-                threshold, gain = self._find_best_split_for_feature(
-                    X[:, feature_idx], grad, hess
-                )
+                hist = self._build_histogram(X[:, feature_idx], grad, hess)
+                if hist is None:
+                    continue
+                
+                bins, g_hist, h_hist = hist
+                threshold, gain = self._find_best_split_from_histogram(bins, g_hist, h_hist)
                 
                 if gain > best_gain:
                     best_gain = gain
                     best_feature = feature_idx
                     best_threshold = threshold
         else:
-            # Parallel evaluation across features
-            with Pool(processes=min(self.n_jobs, len(feature_indices))) as pool:
-                results = []
-                for feature_idx in feature_indices:
-                    result = pool.apply_async(
-                        self._find_best_split_for_feature,
-                        (X[:, feature_idx], grad, hess)
-                    )
-                    results.append((feature_idx, result))
+            # Parallel precomputation of histograms across features
+            from joblib import Parallel, delayed
+            
+            hist_results = Parallel(n_jobs=self.n_jobs)(
+                delayed(self._build_histogram)(X[:, feat_idx], grad, hess)
+                for feat_idx in feature_indices
+            )
+            
+            best_feature = None
+            best_threshold = None
+            best_gain = float('-inf')
+            
+            for feature_idx, hist in zip(feature_indices, hist_results):
+                if hist is None:
+                    continue
+                bins, g_hist, h_hist = hist
+                threshold, gain = self._find_best_split_from_histogram(bins, g_hist, h_hist)
                 
-                best_feature = None
-                best_threshold = None
-                best_gain = float('-inf')
-                
-                for feature_idx, result in results:
-                    threshold, gain = result.get()
-                    
-                    if gain > best_gain:
-                        best_gain = gain
-                        best_feature = feature_idx
-                        best_threshold = threshold
+                if gain > best_gain:
+                    best_gain = gain
+                    best_feature = feature_idx
+                    best_threshold = threshold
         
         if best_gain == float('-inf'):
             return None, None, best_gain
