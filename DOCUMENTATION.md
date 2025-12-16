@@ -1114,7 +1114,7 @@ MIT License - See LICENSE file for details
 
 ### Authors
 
-- **Faris Amine **
+- **Faris Amine**
 - **Zouga Mouhcine**
 - **Serraji Wiame**
 - **El Madani Adam**
