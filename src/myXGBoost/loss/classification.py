@@ -155,3 +155,4 @@ class LogisticLoss(ClassificationLoss):
         hess = p * (1 - p)
         
         return grad, hess
+
