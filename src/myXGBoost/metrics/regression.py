@@ -153,3 +153,4 @@ class R2Score(Metric):
     def name(self) -> str:
         """Metric name."""
         return "r2"
+
