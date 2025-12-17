@@ -110,3 +110,5 @@ class MSELoss(RegressionLoss):
         grad = y_pred - y_true
         hess = np.ones_like(y_pred, dtype=np.float64)
         return grad, hess
+
+
