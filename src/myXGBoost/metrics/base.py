@@ -48,3 +48,4 @@ class Metric(ABC):
     def name(self) -> str:
         """Name of the metric."""
         pass
+        
