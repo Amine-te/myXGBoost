@@ -111,3 +111,4 @@ class ClassificationLoss(LossFunction):
     Classification losses operate on discrete target values (class labels).
     """
     pass
+
