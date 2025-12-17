@@ -199,3 +199,4 @@ class AUC(Metric):
     def name(self) -> str:
         """Metric name."""
         return "auc"
+
