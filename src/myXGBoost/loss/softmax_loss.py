@@ -201,3 +201,4 @@ class SoftmaxLoss(ClassificationLoss):
         hess = np.maximum(hess, 1e-16)
         
         return grad, hess
+
