@@ -72,3 +72,4 @@ def calculate_leaf_weights(
     denominator = np.where(denominator < 1e-10, 1e-10, denominator)
     
     return -grad_sums / denominator
+
