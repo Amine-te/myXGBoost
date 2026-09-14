@@ -107,5 +107,6 @@ The codebase is organized to separate core logic from examples and tests:
 - `examples/benchmarks/`: Validation scripts and performance tests.
 - `tests/`: Unit tests covering robustness, serialization, and logic.
 
-## Presentation
-https://docs.google.com/presentation/d/1ni_zggvNlOWF5LK8n70kaI92uP1uFQ9bfEPVZN_lVEA/edit?usp=sharing
+## License
+
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
